@@ -129,7 +129,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
     labs_df = _data.get('MimicObservationLabevents', pd.DataFrame())
     docs_df = _data.get('MimicDocumentReference', pd.DataFrame())
 
-    for index, enc_row in all_enc_df.iterrows():
+    for _, enc_row in all_enc_df.iterrows():
         enc_id = enc_row.get('id')
         # get all ICU encounter IDs
         if len(enc_icu_df) > 0:
@@ -918,6 +918,10 @@ def display_labs_dashboard(stitched_enc_df):
     st.header("Microbiology")
     microorg_df = enc_row['microorg']
     if not microorg_df.empty:
+        microorg_df = microorg_df[
+            microorg_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1]))
+        ]
+        microorg_df.sort_values('Time', ascending=True, inplace=True)
         st.dataframe(microorg_df, use_container_width=True, hide_index=True)
     else:
         st.write("No microbiology data for this encounter.")
@@ -1028,7 +1032,21 @@ def display_documents(stitched_enc_df):
     if all_documents_df.empty:
         st.write("No document data for this encounter.")
         return
+
+    all_documents_df['date'] = pd.to_datetime(all_documents_df['date'])
     
+    # add time slider
+    time_slider = st.slider(
+        "Time Slider", 
+        min_value=all_documents_df['date'].min().date(), 
+        max_value=all_documents_df['date'].max().date()+pd.Timedelta(days=1), 
+        value=(all_documents_df['date'].min().date(), all_documents_df['date'].max().date()+pd.Timedelta(days=1)),
+        key="doc_time_slider"
+    )
+    
+    all_documents_df = all_documents_df[
+        (all_documents_df['date'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
+    ]
     all_documents_df.sort_values('date', inplace=True)
     for _, row in all_documents_df.iterrows():
         doc_title = safe_get(row, ['content', 0, 'attachment', 'title'], "Document")
