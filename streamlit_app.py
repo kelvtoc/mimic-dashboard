@@ -609,6 +609,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
     for index, enc_row in stitched_enc_df.iterrows():
         start_time = pd.to_datetime(enc_row.get('period.start'), errors='coerce')
         end_time = pd.to_datetime(enc_row.get('period.end'), errors='coerce')
+        los = (end_time - start_time).days
         
         enc_conditions_df = enc_row['conditions']
         first_condition = ""
@@ -617,14 +618,14 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
 
         enc_class = str(safe_get(enc_row, ['class.display'], 'Admission')).title()
 
-        expander_title = f"{enc_class}: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')} - {first_condition}"
+        expander_title = f"{enc_class}: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')} ({los} day(s)) - {first_condition}"
 
         with st.expander(expander_title):
             st.markdown("#### Admission Details")
             st.write(f"Admission ID: {enc_row.get('id')}")
             st.write(f"Admit Date: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
             st.write(f"Discharge Date: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            st.write(f"Length of Stay: {(end_time - start_time).days} days")
+            st.write(f"Length of Stay: {los} day(s)")
             st.write(f"Admit Source: {safe_get(enc_row, ['hospitalization.admitSource.coding', 0, 'code'], 'N/A')}")
             st.write(f"Discharge Disposition: {safe_get(enc_row, ['hospitalization.dischargeDisposition.coding', 0, 'code'], 'N/A')}")
 
