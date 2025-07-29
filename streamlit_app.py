@@ -297,13 +297,15 @@ def stitch_encounter_data(_data, locations_map, med_map):
                         if 'valueQuantity' in comp:
                             if not pd.isna(comp['valueQuantity']):
                                 val = str(comp['valueQuantity']['value'])
-                                if not pd.isna(comp['valueQuantity']['unit']):
-                                    val += str(comp['valueQuantity']['unit'])
+                                if 'unit' in comp['valueQuantity']:
+                                    if not pd.isna(comp['valueQuantity']['unit']):
+                                        val += str(comp['valueQuantity']['unit'])
                         if 'valueQuantity.value' in comp:
                             if not pd.isna(comp['valueQuantity.value']):
                                 val = str(comp['valueQuantity.value'])
-                                if not pd.isna(comp['valueQuantity.unit']):
-                                    val += str(comp['valueQuantity.unit'])
+                                if 'valueQuantity.unit' in comp:
+                                    if not pd.isna(comp['valueQuantity.unit']):
+                                        val += str(comp['valueQuantity.unit'])
                         
                         vital = safe_get(
                             comp, 
@@ -311,10 +313,20 @@ def stitch_encounter_data(_data, locations_map, med_map):
                             safe_get(comp, ['code.coding', 0, 'display'])
                         )
 
+                        vital_group = ''
+                        if 'category' in comp:
+                            if not pd.isna(comp['category']):
+                                vital_group = safe_get(
+                                    comp,
+                                    ['category', 0, 'coding', 0, 'display'],
+                                    safe_get(comp, ['category', 0, 'coding', 0, 'code'])
+                                )
+
                         processed_vitals.append(
                             {
                                 'Timestamp': ts, 
                                 'Vital': vital, 
+                                'Vital Group': vital_group,
                                 'Value': val
                             })
                 else:
@@ -326,11 +338,28 @@ def stitch_encounter_data(_data, locations_map, med_map):
                     if 'valueQuantity' in row:
                         # check if valueQuantity has a value
                         if not pd.isna(row['valueQuantity']):
-                            val = str(row['valueQuantity']['value']) + str(row['valueQuantity']['unit'])
+                            if 'value' in row['valueQuantity']:
+                                if not pd.isna(row['valueQuantity']['value']):
+                                    val = str(row['valueQuantity']['value'])
+                                if 'unit' in row['valueQuantity']:
+                                    if not pd.isna(row['valueQuantity']['unit']):
+                                        val += str(row['valueQuantity']['unit'])
                     if 'valueQuantity.value' in row:
                         # check if valueQuantity.value has a value
                         if not pd.isna(row['valueQuantity.value']):
-                            val = str(row['valueQuantity.value']) + str(row['valueQuantity.unit'])
+                            val = str(row['valueQuantity.value'])
+                            if 'valueQuantity.unit' in row:
+                                if not pd.isna(row['valueQuantity.unit']):
+                                    val += str(row['valueQuantity.unit'])
+
+                    vital_group = ''
+                    if 'category' in row:
+                        if not pd.isna(row['category']):
+                            vital_group = safe_get(
+                                row,
+                                ['category', 0, 'coding', 0, 'display'],
+                                safe_get(row, ['category', 0, 'coding', 0, 'code'])
+                            )
                     
                     vital = safe_get(
                         row, 
@@ -341,6 +370,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
                         {
                             'Timestamp': ts, 
                             'Vital': vital, 
+                            'Vital Group': vital_group,
                             'Value': val
                         })
 
@@ -653,10 +683,14 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
 
             with st.expander("Vitals"):
                 vitals_clean_df = enc_row['vitals']
-                vitals_clean_df.drop_duplicates(['Vital', 'Timestamp'], inplace=True)
+                vitals_clean_df.drop_duplicates(['Vital', 'Vital Group', 'Timestamp'], inplace=True)
                 if not vitals_clean_df.empty:
-                    vitals_clean_df_pivot = vitals_clean_df.pivot(index='Vital', columns='Timestamp', values='Value')
-                    st.dataframe(vitals_clean_df_pivot, use_container_width=True)
+                    for group in vitals_clean_df['Vital Group'].sort_values(ascending=True).unique():
+                        st.subheader(group)
+                        vitals_clean_df_group = vitals_clean_df[vitals_clean_df['Vital Group'] == group]
+                        vitals_clean_df_group.sort_values('Timestamp', ascending=True, inplace=True)
+                        vitals_clean_df_group_pivot = vitals_clean_df_group.pivot(index='Vital', columns='Timestamp', values='Value')
+                        st.dataframe(vitals_clean_df_group_pivot, use_container_width=True)
                 else:
                     st.write("No vital signs data for this encounter.")
 
@@ -731,22 +765,23 @@ def display_vitals_dashboard(stitched_enc_df):
     # st.markdown("---")
     
     st.subheader("Vital Signs Over Time")
-    unique_vitals = vitals_df['Vital'].unique()
+    vitals_df['Vital_label'] = vitals_df['Vital Group'] + " - " + vitals_df['Vital']
+    unique_vitals = vitals_df['Vital_label'].sort_values(ascending=True).unique()
     default_vitals = [
-        "Heart Rate", 
-        "Non Invasive Blood Pressure systolic", 
-        "Non Invasive Blood Pressure diastolic", 
-        "Respiratory Rate", 
-        "Temperature Fahrenheit", 
+        "Routine Vital Signs - Heart Rate", 
+        "Routine Vital Signs - Non Invasive Blood Pressure systolic", 
+        "Routine Vital Signs - Non Invasive Blood Pressure diastolic", 
+        "Respiratory - Respiratory Rate", 
+        "Routine Vital Signs - Temperature Fahrenheit", 
         "O2 saturation pulseoxymetry",
-        "Heart rate",
-        "Respiratory rate",
-        "Body Temperature",
-        "Systolic blood pressure",
-        "Diastolic blood pressure"
+        "Vital Signs - Heart rate",
+        "Vital Signs - Respiratory rate",
+        "Vital Signs - Body temperature",
+        " - Systolic blood pressure",
+        " - Diastolic blood pressure"
     ]
 
-    default_vitals = [v for v in default_vitals if v in unique_vitals]
+    default_vitals = [g for g in default_vitals if g in unique_vitals]
     selected_vitals = st.multiselect(
         "Select vitals to display:", 
         options=unique_vitals, 
@@ -763,7 +798,7 @@ def display_vitals_dashboard(stitched_enc_df):
     
     if selected_vitals:
         vitals_to_plot = vitals_df[
-            (vitals_df['Vital'].isin(selected_vitals)) & 
+            (vitals_df['Vital_label'].isin(selected_vitals)) & 
             (vitals_df['Timestamp'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
         ]
         vitals_to_table = vitals_to_plot.copy()
@@ -777,11 +812,11 @@ def display_vitals_dashboard(stitched_enc_df):
             vitals_to_plot,
             x='Timestamp',
             y='Value',
-            color='Vital',
+            color='Vital_label',
             title="Vital Signs Trend",
             markers=True,
             labels={'Value': 'Reading', 'Timestamp': 'Time'},
-            facet_row='Vital'
+            facet_row='Vital_label'
         )
         fig.update_yaxes(matches=None)
         for a in fig.layout.annotations:
@@ -793,10 +828,10 @@ def display_vitals_dashboard(stitched_enc_df):
         st.plotly_chart(fig, use_container_width=True)
 
         vitals_to_table = vitals_to_table[
-            ~vitals_to_table['Vital'].isin(vitals_to_plot['Vital'].unique().tolist())
+            ~vitals_to_table['Vital_label'].isin(vitals_to_plot['Vital_label'].unique().tolist())
         ]
         if not vitals_to_table.empty:
-            vitals_to_table.sort_values(['Vital', 'Timestamp'], inplace=True)
+            vitals_to_table.sort_values(['Vital_label', 'Timestamp'], inplace=True)
             st.dataframe(vitals_to_table, use_container_width=True, hide_index=True)
         
 
