@@ -903,6 +903,10 @@ def display_medications(stitched_enc_df):
     
     # get all medications
     med_df = pd.concat([med_req_df, med_admin_df, med_disp_df])
+    if med_df.empty:
+        st.write("No medication data for this encounter.")
+        return
+
     all_meds = med_df['Medication'].unique()
 
     # search for medications
@@ -946,9 +950,6 @@ def display_medications(stitched_enc_df):
         ]
         med_admin_df.sort_values('Time', ascending=True, inplace=True)
         st.dataframe(med_admin_df.dropna(subset=['Time']), use_container_width=True, hide_index=True)
-    
-    if med_req_df.empty and med_disp_df.empty and med_admin_df.empty:
-        st.write("No medication data for this encounter.")
 
 
 def display_procedures(stitched_enc_df):
@@ -960,6 +961,9 @@ def display_procedures(stitched_enc_df):
         all_procedures.append(enc_row['procedures'])
     
     all_procedures_df = pd.concat(all_procedures)
+    if all_procedures_df.empty:
+        st.write("No procedure data for this encounter.")
+        return
     
     # add time slider
     time_slider = st.slider(
@@ -970,14 +974,11 @@ def display_procedures(stitched_enc_df):
         key="proc_time_slider"
     )
 
-    if not all_procedures_df.empty:
-        all_procedures_df = all_procedures_df[
-            (all_procedures_df['StartTime'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
-        ]
-        all_procedures_df.sort_values('StartTime', ascending=True, inplace=True)
-        st.dataframe(all_procedures_df, use_container_width=True, hide_index=True)
-    else:
-        st.write("No procedure data for this encounter.")
+    all_procedures_df = all_procedures_df[
+        (all_procedures_df['StartTime'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
+    ]
+    all_procedures_df.sort_values('StartTime', ascending=True, inplace=True)
+    st.dataframe(all_procedures_df, use_container_width=True, hide_index=True)
     
 
 def display_documents(stitched_enc_df):
@@ -989,24 +990,24 @@ def display_documents(stitched_enc_df):
         all_documents.append(enc_row['reports'])
     
     all_documents_df = pd.concat(all_documents)
-
-    if not all_documents_df.empty:
-        all_documents_df.sort_values('date', inplace=True)
-        for _, row in all_documents_df.iterrows():
-            doc_title = safe_get(row, ['content', 0, 'attachment', 'title'], "Document")
-            doc_date = row.get('date', 'No Date')
-            with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d')}**"):
-                try:
-                    b64_data = safe_get(row, ['content', 0, 'attachment', 'data'])
-                    if b64_data:
-                        text_data = base64.b64decode(b64_data).decode('UTF-8', errors='ignore')
-                        st.text_area(f"{row['id']}", text_data, height=300)
-                    else:
-                        st.warning("No data found for this document.")
-                except Exception as e:
-                    st.error(f"Could not display document. Error: {e}")
-    else:
-        st.write("No reports for this encounter.")
+    if all_documents_df.empty:
+        st.write("No document data for this encounter.")
+        return
+    
+    all_documents_df.sort_values('date', inplace=True)
+    for _, row in all_documents_df.iterrows():
+        doc_title = safe_get(row, ['content', 0, 'attachment', 'title'], "Document")
+        doc_date = row.get('date', 'No Date')
+        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d')}**"):
+            try:
+                b64_data = safe_get(row, ['content', 0, 'attachment', 'data'])
+                if b64_data:
+                    text_data = base64.b64decode(b64_data).decode('UTF-8', errors='ignore')
+                    st.text_area(f"{row['id']}", text_data, height=300, key=row['id'])
+                else:
+                    st.warning("No data found for this document.")
+            except Exception as e:
+                st.error(f"Could not display document. Error: {e}")
 
 
 # --- Main Application Logic ---
