@@ -596,7 +596,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         st.write(f"Gender: {p_info.get('gender', 'N/A').capitalize()}")
         st.write(f"Race: {safe_get(p_info, ['extension', 0, 'extension', 1, 'valueString'], 'N/A')}")
         st.write(f"Ethnicity: {safe_get(p_info, ['extension', 1, 'extension', 1, 'valueString'], 'N/A')}")
-        st.write(f"Marital Status: {safe_get(p_info, ['maritalStatus', 'coding', 0, 'code'], 'N/A')}")
+        st.write(f"Marital Status: {safe_get(p_info, ['maritalStatus.coding', 0, 'code'], 'N/A')}")
         st.write(f"Organization: {org_name}")
         st.markdown("---")
 
