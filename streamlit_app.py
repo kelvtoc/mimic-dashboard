@@ -125,7 +125,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
     med_disp_df = pd.concat([_data.get('MimicMedicationDispense', pd.DataFrame()), _data.get('MimicMedicationDispenseED', pd.DataFrame())])
     med_admin_df = pd.concat([_data.get('MimicMedicationAdministration', pd.DataFrame()), _data.get('MimicMedicationAdministrationICU', pd.DataFrame())])
     vitals_df = pd.concat([_data.get('MimicObservationVitalSignsED', pd.DataFrame()), _data.get('MimicObservationChartevents', pd.DataFrame()), _data.get('MimicObservationED', pd.DataFrame()), _data.get('MimicObservationOutputevents', pd.DataFrame()), _data.get('MimicObservationDatetimeevents', pd.DataFrame())])
-    # micro_org_df = pd.concat([_data.get('MimicObservationMicroSusc', pd.DataFrame()), _data.get('MimicObservationMicroTest', pd.DataFrame()), _data.get('MimicObservationMicroOrg', pd.DataFrame())])
+    micro_org_df = pd.concat([_data.get('MimicObservationMicroSusc', pd.DataFrame()), _data.get('MimicObservationMicroTest', pd.DataFrame()), _data.get('MimicObservationMicroOrg', pd.DataFrame())])
     labs_df = _data.get('MimicObservationLabevents', pd.DataFrame())
     docs_df = _data.get('MimicDocumentReference', pd.DataFrame())
 
@@ -137,8 +137,14 @@ def stitch_encounter_data(_data, locations_map, med_map):
             icu_enc_ids = icu_enc_ids['id'].tolist()
         else:
             icu_enc_ids = []
+
+        if len(enc_ed_df) > 0:
+            ed_enc_ids = enc_ed_df[enc_ed_df.get('partOf.reference') == f"Encounter/{enc_id}"]
+            ed_enc_ids = ed_enc_ids['id'].tolist()
+        else:
+            ed_enc_ids = []
         # get all IDs
-        all_enc_ids = [enc_id] + icu_enc_ids
+        all_enc_ids = [enc_id] + icu_enc_ids + ed_enc_ids
         all_enc_ids = [f"Encounter/{id}" for id in all_enc_ids]
 
         # --- Conditions ---
@@ -275,8 +281,6 @@ def stitch_encounter_data(_data, locations_map, med_map):
             enc_vitals_df = vitals_df[vitals_df.get('context.reference').isin(all_enc_ids)]
         else:
             enc_vitals_df = pd.DataFrame()
-
-        # st.dataframe(enc_vitals_df, use_container_width=True, hide_index=True)
 
         processed_vitals = []   
         if not enc_vitals_df.empty:
@@ -451,6 +455,42 @@ def stitch_encounter_data(_data, locations_map, med_map):
             enc_procs_df['EndTime'] = pd.to_datetime(enc_procs_df['EndTime'], errors='coerce')
         else:
             enc_procs_df = pd.DataFrame()
+
+
+        # --- Microbiology ---
+        enc_micro = []
+        for _, row in micro_org_df.iterrows():
+            micro_name = safe_get(
+                row, 
+                ['code.coding', 0, 'display'], 
+                safe_get(row, ['code', 'coding', 0, 'display'], 'N/A')
+            )
+
+            val = ''
+            if 'valueString' in row:
+                if pd.notna(row['valueString']):
+                    val = row['valueString']
+
+            if 'valueCodeableConcept.coding' in row:
+                if pd.notna(row['valueCodeableConcept.coding']):
+                    val = row['valueCodeableConcept.coding'][0]['display']
+
+            time = ''
+            if 'effectiveDateTime' in row:
+                if pd.notna(row['effectiveDateTime']):
+                    time = row['effectiveDateTime']
+
+            enc_micro.append({
+                'Microbiology': micro_name,
+                'Value': val,
+                'Time': time
+            })
+        if len(enc_micro) > 0:
+            enc_micro_df = pd.DataFrame(enc_micro)
+            enc_micro_df['Time'] = pd.to_datetime(enc_micro_df['Time'], errors='coerce')
+        else:
+            enc_micro_df = pd.DataFrame()
+        
         
         stitched_data.append({
             **enc_row.to_dict(), 
@@ -461,6 +501,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
             'med_admin': meds_admin_df, 
             'vitals': vitals_clean_df, 
             'labs': labs_clean_df, 
+            'microorg': enc_micro_df,
             'reports': enc_docs_df
         })
 
@@ -548,8 +589,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
             st.write(f"Discharge Disposition: {safe_get(enc_row, ['hospitalization.dischargeDisposition.coding', 0, 'code'], 'N/A')}")
 
             # Location Gantt Chart
-            with st.container():
-                st.markdown("##### Location Timeline")
+            with st.expander("Location"):
                 locations = enc_row.get('location')
                 if isinstance(locations, list):
                     loc_events = []
@@ -628,6 +668,13 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                     st.dataframe(labs_clean_df_pivot, use_container_width=True)
                 else:
                     st.write("No lab data for this encounter.")
+
+                st.subheader("Microbiology")
+                microorg_df = enc_row['microorg']
+                if not microorg_df.empty:
+                    st.dataframe(microorg_df, use_container_width=True, hide_index=True)
+                else:
+                    st.write("No microbiology data for this encounter.")
 
             with st.expander("Reports"):
                 enc_docs_df = enc_row['reports']
@@ -833,6 +880,13 @@ def display_labs_dashboard(stitched_enc_df):
             labs_to_table.sort_values(['Lab Test', 'Timestamp'], inplace=True)
             st.dataframe(labs_to_table, use_container_width=True, hide_index=True)
 
+    st.header("Microbiology")
+    microorg_df = enc_row['microorg']
+    if not microorg_df.empty:
+        st.dataframe(microorg_df, use_container_width=True, hide_index=True)
+    else:
+        st.write("No microbiology data for this encounter.")
+
 
 def display_medications(stitched_enc_df):
     """Renders the medication management tab."""
@@ -986,7 +1040,7 @@ def main():
             medications_df['display_name'] = medications_df['identifier'].apply(get_med_name)
             med_map = pd.Series(medications_df.display_name.values, index=medications_df.id).to_dict()
             
-            # Handle potential missing 'id' in specimens_df for mapping
+            # # Handle potential missing 'id' in specimens_df for mapping
             # specimen_map = {}
             # if 'id' in specimens_df.columns and 'type.coding.0.display' in specimens_df.columns:
             #     specimen_map = pd.Series(specimens_df['type.coding.0.display'].values, index=specimens_df['id']).to_dict()
