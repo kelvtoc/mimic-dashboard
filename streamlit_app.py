@@ -153,12 +153,6 @@ def stitch_encounter_data(_data, locations_map, med_map):
         else:
             enc_conditions_df = pd.DataFrame()
         
-        # --- Procedures ---
-        if 'encounter.reference' in all_proc_df.columns:
-            enc_procs_df = all_proc_df[all_proc_df.get('encounter.reference').isin(all_enc_ids)]
-        else:
-            enc_procs_df = pd.DataFrame()
-        
         # --- Medications ---
         if 'encounter.reference' in med_req_df.columns:
             enc_med_req = med_req_df[med_req_df.get('encounter.reference').isin(all_enc_ids)]
@@ -185,7 +179,18 @@ def stitch_encounter_data(_data, locations_map, med_map):
 
                 if med_name != 'N/A':
                     start = safe_get(row, ['dispenseRequest.validityPeriod.start'], 'N/A')
+                    if (start != 'N/A') and pd.notna(start):
+                        try:
+                            start = pd.to_datetime(start).strftime('%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                            pass
                     end = safe_get(row, ['dispenseRequest.validityPeriod.end'], 'N/A')
+                    if (end != 'N/A') and pd.notna(end):
+                        try:
+                            end = pd.to_datetime(end).strftime('%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                            pass
+                    
                     meds_req_list.append(
                         {
                             'Time': row.get('authoredOn'),
@@ -385,10 +390,9 @@ def stitch_encounter_data(_data, locations_map, med_map):
             enc_labs_df = labs_df[labs_df.get('encounter.reference').isin(all_enc_ids)]
         else:
             enc_labs_df = pd.DataFrame()
+
         labs_clean_df = pd.DataFrame()
         if not enc_labs_df.empty:
-            # st.dataframe(enc_labs_df, use_container_width=True, hide_index=True)
-
             enc_labs_df['Timestamp'] = pd.to_datetime(enc_labs_df.get('effectiveDateTime'), errors='coerce')
             labs_clean = []
             for _, row in enc_labs_df.iterrows():
@@ -442,6 +446,11 @@ def stitch_encounter_data(_data, locations_map, med_map):
             enc_docs_df = pd.DataFrame()
 
         # --- Procedures ---
+        if 'encounter.reference' in all_proc_df.columns:
+            enc_procs_df = all_proc_df[all_proc_df.get('encounter.reference').isin(all_enc_ids)]
+        else:
+            enc_procs_df = pd.DataFrame()
+
         enc_procs = []
         for _, row in enc_procs_df.iterrows():
             proc_name = safe_get(
@@ -582,7 +591,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         org_name = org_map.get(org_ref, 'Unknown Org')
 
         st.write(f"Patient ID: {patient_data.get('patient_id', 'N/A').split('/')[-1]}")
-        st.write(f"Birth Date: {p_info.get('birthDate', 'N/A')}")
+        st.write(f"Birth Date: {birth_date.strftime('%Y-%m-%d')}")
         st.write(f"Age: {age}")
         st.write(f"Gender: {p_info.get('gender', 'N/A').capitalize()}")
         st.write(f"Race: {safe_get(p_info, ['extension', 0, 'extension', 1, 'valueString'], 'N/A')}")
@@ -613,8 +622,9 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         with st.expander(expander_title):
             st.markdown("#### Admission Details")
             st.write(f"Admission ID: {enc_row.get('id')}")
-            st.write(f"Admission Date: {enc_row.get('period.start')}")
-            st.write(f"Admission End Date: {enc_row.get('period.end')}")
+            st.write(f"Admit Date: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.write(f"Discharge Date: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.write(f"Length of Stay: {(end_time - start_time).days} days")
             st.write(f"Admit Source: {safe_get(enc_row, ['hospitalization.admitSource.coding', 0, 'code'], 'N/A')}")
             st.write(f"Discharge Disposition: {safe_get(enc_row, ['hospitalization.dischargeDisposition.coding', 0, 'code'], 'N/A')}")
 
@@ -626,17 +636,29 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                     for loc in locations:
                         loc_id = safe_get(loc, ['location', 'reference'], '').replace('Location/', '')
                         loc_name = locations_map.get(loc_id, 'Unknown Location')
+
+                        start = pd.to_datetime(safe_get(loc, ['period', 'start']), errors='coerce')
+                        end = pd.to_datetime(safe_get(loc, ['period', 'end']), errors='coerce')
+                        los = (end - start).days
                         loc_events.append({
                             'Task': loc_name,  # Plotly expects 'Task' for the y-axis label
-                            'Start': pd.to_datetime(safe_get(loc, ['period', 'start']), errors='coerce'),
-                            'Finish': pd.to_datetime(safe_get(loc, ['period', 'end']), errors='coerce'),
-                            'Resource': loc_name
+                            'Start': start,
+                            'Finish': end,
+                            'Resource': loc_name,
+                            'Length of Stay': los
                         })
                     
                     loc_df = pd.DataFrame(loc_events).dropna(subset=['Start', 'Finish'])
                     if not loc_df.empty:
-                        fig = px.timeline(loc_df, x_start="Start", x_end="Finish", y="Task", 
-                                          color="Resource", title=f"Patient Movement for Encounter {enc_row.get('id')}")
+                        fig = px.timeline(
+                            loc_df, 
+                            x_start="Start", 
+                            x_end="Finish", 
+                            y="Task", 
+                            color="Resource", 
+                            custom_data="Length of Stay",
+                            title=f"Patient Movement for Encounter {enc_row.get('id')}"
+                        )
                         fig.update_yaxes(autorange="reversed")
                         st.plotly_chart(fig, use_container_width=True)
                     else:
@@ -647,9 +669,16 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
             # Nested Expanders
             with st.expander("Conditions"):
                 if not enc_conditions_df.empty:
-                    cond_list = [safe_get(row['code.coding'], [0, 'display'], 'N/A') for _, row in enc_conditions_df.iterrows()]
-                    code_list = [safe_get(row['code.coding'], [0, 'code'], 'N/A') for _, row in enc_conditions_df.iterrows()]
-                    st.dataframe(pd.DataFrame({'Condition': cond_list, 'Code': code_list}), use_container_width=True, hide_index=True)
+                    cond_list = [
+                        safe_get(row['code.coding'], [0, 'display'], 'N/A') 
+                        for _, row in enc_conditions_df.iterrows()
+                    ]
+                    code_list = [
+                        safe_get(row['code.coding'], [0, 'code'], 'N/A') 
+                        for _, row in enc_conditions_df.iterrows()
+                    ]
+                    cond_df = pd.DataFrame({'Condition': cond_list, 'Code': code_list})
+                    st.dataframe(cond_df, use_container_width=True, hide_index=True)
                 else:
                     st.write("No condition data for this encounter.")
 
@@ -1034,7 +1063,7 @@ def display_documents(stitched_enc_df):
         return
 
     all_documents_df['date'] = pd.to_datetime(all_documents_df['date'])
-    
+
     # add time slider
     time_slider = st.slider(
         "Time Slider", 
@@ -1093,11 +1122,6 @@ def main():
                 return 'Unknown Med'
             medications_df['display_name'] = medications_df['identifier'].apply(get_med_name)
             med_map = pd.Series(medications_df.display_name.values, index=medications_df.id).to_dict()
-            
-            # # Handle potential missing 'id' in specimens_df for mapping
-            # specimen_map = {}
-            # if 'id' in specimens_df.columns and 'type.coding.0.display' in specimens_df.columns:
-            #     specimen_map = pd.Series(specimens_df['type.coding.0.display'].values, index=specimens_df['id']).to_dict()
 
             stitched_encounters_df = stitch_encounter_data(patient_data, locations_map, med_map)
             
