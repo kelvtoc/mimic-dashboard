@@ -100,7 +100,7 @@ def style_lab_results(df):
 
 # --- Data Stitching Logic ---
 # @st.cache_data
-def stitch_encounter_data(_data, locations_map, med_map, specimen_map):
+def stitch_encounter_data(_data, locations_map, med_map):
     """Stitches all related patient data into a single encounters DataFrame."""
     
     # Combine all encounter types
@@ -961,7 +961,7 @@ def main():
     # Load reference data
     locations_df = load_ndjson_data("data/mimic_assets/MimicLocation.ndjson")
     medications_df = load_ndjson_data("data/mimic_assets/MimicMedication.ndjson")
-    specimens_df = load_ndjson_data("data/mimic_assets/MimicSpecimen.ndjson")
+    # specimens_df = load_ndjson_data("data/mimic_assets/MimicSpecimen.ndjson")
     orgs_df = load_ndjson_data("data/mimic_assets/MimicOrganization.ndjson")
 
     with st.sidebar:
@@ -987,11 +987,11 @@ def main():
             med_map = pd.Series(medications_df.display_name.values, index=medications_df.id).to_dict()
             
             # Handle potential missing 'id' in specimens_df for mapping
-            specimen_map = {}
-            if 'id' in specimens_df.columns and 'type.coding.0.display' in specimens_df.columns:
-                specimen_map = pd.Series(specimens_df['type.coding.0.display'].values, index=specimens_df['id']).to_dict()
+            # specimen_map = {}
+            # if 'id' in specimens_df.columns and 'type.coding.0.display' in specimens_df.columns:
+            #     specimen_map = pd.Series(specimens_df['type.coding.0.display'].values, index=specimens_df['id']).to_dict()
 
-            stitched_encounters_df = stitch_encounter_data(patient_data, locations_map, med_map, specimen_map)
+            stitched_encounters_df = stitch_encounter_data(patient_data, locations_map, med_map)
             
             tab_titles = ["📄 Overview", "❤️ Vitals", "🧪 Labs", "💊 Medications", "💉 Procedures", "📝 Documents"]
             overview, vitals, labs, medications, procedures, documents = st.tabs(tab_titles)
