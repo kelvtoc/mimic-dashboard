@@ -144,19 +144,41 @@ def stitch_encounter_data(_data, locations_map, med_map):
         enc_id = enc_row.get('id')
         # get all ICU encounter IDs
         if len(enc_icu_df) > 0:
-            icu_enc_ids = enc_icu_df[enc_icu_df.get('partOf.reference') == f"Encounter/{enc_id}"]
-            icu_enc_ids = icu_enc_ids['id'].tolist()
+            icu_enc_data = enc_icu_df[enc_icu_df.get('partOf.reference') == f"Encounter/{enc_id}"]
+            icu_enc_ids = icu_enc_data['id'].tolist()
         else:
+            icu_enc_data = pd.DataFrame()
             icu_enc_ids = []
 
         if len(enc_ed_df) > 0:
-            ed_enc_ids = enc_ed_df[enc_ed_df.get('partOf.reference') == f"Encounter/{enc_id}"]
-            ed_enc_ids = ed_enc_ids['id'].tolist()
+            ed_enc_data = enc_ed_df[enc_ed_df.get('partOf.reference') == f"Encounter/{enc_id}"]
+            ed_enc_ids = ed_enc_data['id'].tolist()
         else:
+            ed_enc_data = pd.DataFrame()
             ed_enc_ids = []
         # get all IDs
         all_enc_ids = [enc_id] + icu_enc_ids + ed_enc_ids
         all_enc_ids = [f"Encounter/{id}" for id in all_enc_ids]
+
+        # Related Encounter IDs
+        related_enc_ids = []
+        if len(icu_enc_data) > 0:
+            for _, icu in icu_enc_data.iterrows():
+                related_enc_ids.append({
+                    "id": icu['id'],
+                    "location": "ICU",
+                    "start": pd.to_datetime(icu['period.start']).strftime('%Y-%m-%d %H:%M:%S'),
+                    "end": pd.to_datetime(icu['period.end']).strftime('%Y-%m-%d %H:%M:%S')
+                })
+        if len(ed_enc_data) > 0:
+            for _, ed in ed_enc_data.iterrows():
+                related_enc_ids.append({
+                    "id": ed['id'],
+                    "location": "ED",
+                    "start": pd.to_datetime(ed['period.start']).strftime('%Y-%m-%d %H:%M:%S'),
+                    "end": pd.to_datetime(ed['period.end']).strftime('%Y-%m-%d %H:%M:%S')
+                })
+        
 
         # --- Conditions ---
         if 'encounter.reference' in all_cond_df.columns:
@@ -592,7 +614,8 @@ def stitch_encounter_data(_data, locations_map, med_map):
             'observations': observations_clean_df,
             'labs': labs_clean_df, 
             'microorg': enc_micro_df,
-            'reports': enc_docs_df
+            'reports': enc_docs_df,
+            'related_encounter_ids': related_enc_ids
         })
 
     final_df = pd.DataFrame(stitched_data)
@@ -678,6 +701,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
 
         enc_class = str(safe_get(enc_row, ['class.display'], 'Admission')).title()
 
+        related_enc_ids = enc_row['related_encounter_ids']
         expander_title = f"{enc_class}: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')} ({los} day(s)) - {first_condition}"
 
         with st.expander(expander_title):
@@ -688,6 +712,12 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
             st.write(f"Length of Stay: {los} day(s)")
             st.write(f"Admit Source: {safe_get(enc_row, ['hospitalization.admitSource.coding', 0, 'code'], 'N/A')}")
             st.write(f"Discharge Disposition: {safe_get(enc_row, ['hospitalization.dischargeDisposition.coding', 0, 'code'], 'N/A')}")
+
+            if len(related_enc_ids) > 0:
+                related_enc_ids.sort(key=lambda item:item['start'], reverse=False)
+                st.write("Related Encounters:")
+                for related_enc in related_enc_ids:
+                    st.write(f"- {related_enc['id']} ({related_enc['location']}) : ({related_enc['start']} to {related_enc['end']})")
 
             # Location Gantt Chart
             with st.expander("Location"):
