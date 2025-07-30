@@ -1,8 +1,8 @@
-# :earth_americas: GDP dashboard template
+# Mimic Patient Data Dashboard
 
-A simple Streamlit app showing the GDP of different countries in the world.
+A simple Streamlit app to view mimic patient data
 
-[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://gdp-dashboard-template.streamlit.app/)
+[![Open in Streamlit](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://mimic-dashboard-oc.streamlit.app/)
 
 ### How to run it on your own machine
 
