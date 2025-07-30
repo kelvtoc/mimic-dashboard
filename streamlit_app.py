@@ -58,6 +58,16 @@ def safe_get(dct, keys, default=None):
             return default
     return dct
 
+def format_value(val):
+    try:
+        # Convert to float and check if it's an integer
+        num = float(val)
+        if num.is_integer():
+            return str(int(num))  # Return "1" for 1.0
+        return f"{num:.2f}"  # Return 2 decimal places for non-integer floats
+    except (ValueError, TypeError):
+        return str(val)  # Return unchanged if string or invalid
+
 def get_display_name(row, key_list):
     """Safely extracts display name from common FHIR structures."""
     display = safe_get(row, key_list)
@@ -244,11 +254,11 @@ def stitch_encounter_data(_data, locations_map, med_map):
                     ['medicationCodeableConcept', 'coding', 0, 'display'],
                     safe_get(row, ['medicationCodeableConcept.coding', 0, 'display'], 'N/A')
                 )
-                dose = safe_get(
+                dose = format_value(safe_get(
                     row,
                     ['dosage', 'dose', 'value'],
                     safe_get(row, ['dosage.dose.value'], '')
-                )
+                ))
                 unit = safe_get(
                     row,
                     ['dosage', 'dose', 'unit'],
@@ -302,13 +312,13 @@ def stitch_encounter_data(_data, locations_map, med_map):
                                 val = comp['valueString']
                         if 'valueQuantity' in comp:
                             if not pd.isna(comp['valueQuantity']):
-                                val = str(comp['valueQuantity']['value'])
+                                val = format_value(comp['valueQuantity']['value'])
                                 if 'unit' in comp['valueQuantity']:
                                     if not pd.isna(comp['valueQuantity']['unit']):
                                         val += str(comp['valueQuantity']['unit'])
                         if 'valueQuantity.value' in comp:
                             if not pd.isna(comp['valueQuantity.value']):
-                                val = str(comp['valueQuantity.value'])
+                                val = format_value(comp['valueQuantity.value'])
                                 if 'valueQuantity.unit' in comp:
                                     if not pd.isna(comp['valueQuantity.unit']):
                                         val += str(comp['valueQuantity.unit'])
@@ -349,14 +359,14 @@ def stitch_encounter_data(_data, locations_map, med_map):
                         if not pd.isna(row['valueQuantity']):
                             if 'value' in row['valueQuantity']:
                                 if not pd.isna(row['valueQuantity']['value']):
-                                    val = str(row['valueQuantity']['value'])
+                                    val = format_value(row['valueQuantity']['value'])
                                 if 'unit' in row['valueQuantity']:
                                     if not pd.isna(row['valueQuantity']['unit']):
                                         val += str(row['valueQuantity']['unit'])
                     if 'valueQuantity.value' in row:
                         # check if valueQuantity.value has a value
                         if not pd.isna(row['valueQuantity.value']):
-                            val = str(row['valueQuantity.value'])
+                            val = format_value(row['valueQuantity.value'])
                             if 'valueQuantity.unit' in row:
                                 if not pd.isna(row['valueQuantity.unit']):
                                     val += str(row['valueQuantity.unit'])
@@ -443,12 +453,12 @@ def stitch_encounter_data(_data, locations_map, med_map):
                         val = row['valueString']
                 if 'valueQuantity' in row:
                     if pd.notna(row['valueQuantity']):
-                        val = str(row['valueQuantity']['value'])
+                        val = format_value(row['valueQuantity']['value'])
                         if pd.notna(row['valueQuantity']['unit']):
                             val += str(row['valueQuantity']['unit'])
                 if 'valueQuantity.value' in row:
                     if pd.notna(row['valueQuantity.value']):
-                        val = str(row['valueQuantity.value'])
+                        val = format_value(row['valueQuantity.value'])
                         if pd.notna(row['valueQuantity.unit']):
                             val += str(row['valueQuantity.unit'])
 
@@ -906,13 +916,13 @@ def display_vitals_dashboard(stitched_enc_df):
         ]
         vitals_to_table = vitals_to_plot.copy()
         vitals_to_plot['Value'] = pd.to_numeric(
-            vitals_to_plot['Value'].str.extract(r'(\d*\.\d+)')[0],
+            vitals_to_plot['Value'].str.extract(r'(\d*\.?\d+)')[0],
             errors='coerce'
         )
         vitals_to_plot = vitals_to_plot.dropna(subset=['Value'])
 
         # Create subplot figure with one row per vital sign
-        selected_vitals_to_plot = vitals_to_plot['Vital'].unique()
+        selected_vitals_to_plot = vitals_to_plot['Vital'].unique().tolist()
         n_facets = len(selected_vitals_to_plot)
         fig = make_subplots(
             rows=n_facets,
@@ -1029,7 +1039,7 @@ def display_labs_dashboard(stitched_enc_df):
         ]
         labs_to_table = labs_to_plot.copy()
         labs_to_plot['Value'] = pd.to_numeric(
-            labs_to_plot['Value'].str.extract(r'(\d*\.\d+)')[0],
+            labs_to_plot['Value'].str.extract(r'(\d*\.?\d+)')[0],
             errors='coerce'
         )
         labs_to_plot = labs_to_plot.dropna(subset=['Value'])
