@@ -5,6 +5,7 @@ import base64
 from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import io
 
 # --- Configuration & Constants ---
@@ -661,6 +662,15 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                             title=f"Patient Movement for Encounter {enc_row.get('id')}"
                         )
                         fig.update_yaxes(autorange="reversed")
+                        fig.update_layout( 
+                            showlegend=False
+                        )
+                        # fig.update_traces(
+                        #     hovertemplate="<b>Location:</b> %{y}<br>" +
+                        #             "<b>Start:</b> %{x|%Y-%m-%d %H:%M:%S}<br>" +
+                        #             "<b>End:</b> %{xother|%Y-%m-%d %H:%M:%S}<br>" +
+                        #             "<b>Length of Stay:</b> %{customdata[0]} day(s)"
+                        # )
                         st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.write("No location data for this encounter.")
@@ -720,7 +730,9 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                         vitals_clean_df_group = vitals_clean_df[vitals_clean_df['Vital Group'] == group]
                         vitals_clean_df_group.sort_values('Timestamp', ascending=True, inplace=True)
                         vitals_clean_df_group_pivot = vitals_clean_df_group.pivot(index='Vital', columns='Timestamp', values='Value')
-                        st.dataframe(vitals_clean_df_group_pivot, use_container_width=True)
+                        vitals_clean_df_group_pivot.reset_index(inplace=True)
+                        vitals_clean_df_group_pivot.fillna(value="", inplace=True)
+                        st.dataframe(vitals_clean_df_group_pivot, use_container_width=True, hide_index=True)
                 else:
                     st.write("No vital signs data for this encounter.")
 
@@ -729,7 +741,9 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 labs_clean_df.drop_duplicates(['Lab Test', 'Timestamp'], inplace=True)
                 if not labs_clean_df.empty:
                     labs_clean_df_pivot = labs_clean_df.pivot(index='Lab Test', columns='Timestamp', values='Value')
-                    st.dataframe(labs_clean_df_pivot, use_container_width=True)
+                    labs_clean_df_pivot.reset_index(inplace=True)
+                    labs_clean_df_pivot.fillna(value="", inplace=True)
+                    st.dataframe(labs_clean_df_pivot, use_container_width=True, hide_index=True)
                 else:
                     st.write("No lab data for this encounter.")
 
@@ -837,24 +851,66 @@ def display_vitals_dashboard(stitched_enc_df):
             errors='coerce'
         )
         vitals_to_plot = vitals_to_plot.dropna(subset=['Value'])
-        
-        fig = px.line(
-            vitals_to_plot,
-            x='Timestamp',
-            y='Value',
-            color='Vital_label',
-            title="Vital Signs Trend",
-            markers=True,
-            labels={'Value': 'Reading', 'Timestamp': 'Time'},
-            facet_row='Vital_label'
+
+        # Create subplot figure with one row per vital sign
+        selected_vitals_to_plot = vitals_to_plot['Vital_label'].unique()
+        n_facets = len(selected_vitals_to_plot)
+        fig = make_subplots(
+            rows=n_facets,
+            cols=1,
+            shared_xaxes=True,  # Share x-axis (Timestamp) across subplots
+            vertical_spacing=0.05,  # Adjust spacing between subplots
+            subplot_titles=selected_vitals_to_plot  # Set subplot titles to lab test names
         )
-        fig.update_yaxes(matches=None)
-        for a in fig.layout.annotations:
-            a.text = a.text.split("=")[1]
-            a.textangle = 0
+
+        # Add traces with custom hover template
+        for i, vital in enumerate(selected_vitals_to_plot, start=1):
+            vital_data = vitals_to_plot[vitals_to_plot['Vital_label'] == vital]
+            
+            # Format Timestamp for hover (assuming Timestamp is datetime)
+            hover_timestamps = vital_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Include Unit in hover if available, otherwise use empty string
+            units = vital_data['Unit'] if 'Unit' in vital_data.columns else [''] * len(vital_data)
+            
+            # Custom hover template
+            hover_template = (
+                '<b>%{customdata[0]}</b><br>'  # Lab Test name
+                'Time: %{customdata[1]}<br>'   # Formatted Timestamp
+                'Value: %{y:.2f} %{customdata[2]}<br>'  # Value with unit
+                '<extra></extra>'  # Removes secondary box
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=vital_data['Timestamp'],
+                    y=vital_data['Value'],
+                    mode='lines+markers',
+                    name=vital,
+                    line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
+                    customdata=list(zip(vital_data['Vital_label'], hover_timestamps, units)),  # Pass data for hover
+                    hovertemplate=hover_template
+                ),
+                row=i,
+                col=1
+            )
+
+        # Update layout
         fig.update_layout(
-            height=200*len(selected_vitals)
+            height=200 * n_facets,
+            showlegend=False,
+            title_text="Vital Signs Trend",
+            title_x=0.5,
+            title_y=0.98,
+            margin=dict(t=100)
         )
+
+        # Customize axes
+        for i in range(1, n_facets + 1):
+            fig.update_yaxes(title_text="Reading", row=i, col=1, title_standoff=10)
+        fig.update_xaxes(title_text="Time", row=n_facets, col=1)
+
+        # Display in Streamlit
         st.plotly_chart(fig, use_container_width=True)
 
         vitals_to_table = vitals_to_table[
@@ -918,24 +974,66 @@ def display_labs_dashboard(stitched_enc_df):
             errors='coerce'
         )
         labs_to_plot = labs_to_plot.dropna(subset=['Value'])
-        
-        fig = px.line(
-            labs_to_plot,
-            x='Timestamp',
-            y='Value',
-            color='Lab Test',
-            title="Lab Results Trend",
-            markers=True,
-            labels={'Value': 'Reading', 'Timestamp': 'Time'},
-            facet_row='Lab Test'
+
+        # Create subplot figure with one row per lab test
+        selected_labs_to_plot = labs_to_plot['Lab Test'].unique()
+        n_facets = len(selected_labs_to_plot)
+        fig = make_subplots(
+            rows=n_facets,
+            cols=1,
+            shared_xaxes=True,  # Share x-axis (Timestamp) across subplots
+            vertical_spacing=0.05,  # Adjust spacing between subplots
+            subplot_titles=selected_labs_to_plot  # Set subplot titles to lab test names
         )
-        fig.update_yaxes(matches=None)
-        for a in fig.layout.annotations:
-            a.text = a.text.split("=")[1]
-            a.textangle = 0
+
+        # Add traces with custom hover template
+        for i, lab in enumerate(selected_labs_to_plot, start=1):
+            lab_data = labs_to_plot[labs_to_plot['Lab Test'] == lab]
+            
+            # Format Timestamp for hover (assuming Timestamp is datetime)
+            hover_timestamps = lab_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Include Unit in hover if available, otherwise use empty string
+            units = lab_data['Unit'] if 'Unit' in lab_data.columns else [''] * len(lab_data)
+            
+            # Custom hover template
+            hover_template = (
+                '<b>%{customdata[0]}</b><br>'  # Lab Test name
+                'Time: %{customdata[1]}<br>'   # Formatted Timestamp
+                'Value: %{y:.2f} %{customdata[2]}<br>'  # Value with unit
+                '<extra></extra>'  # Removes secondary box
+            )
+            
+            fig.add_trace(
+                go.Scatter(
+                    x=lab_data['Timestamp'],
+                    y=lab_data['Value'],
+                    mode='lines+markers',
+                    name=lab,
+                    line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
+                    customdata=list(zip(lab_data['Lab Test'], hover_timestamps, units)),  # Pass data for hover
+                    hovertemplate=hover_template
+                ),
+                row=i,
+                col=1
+            )
+
+        # Update layout
         fig.update_layout(
-            height=200*len(selected_labs),
+            height=200 * n_facets,
+            showlegend=False,
+            title_text="Lab Results Trend",
+            title_x=0.5,
+            title_y=0.98,
+            margin=dict(t=100)
         )
+
+        # Customize axes
+        for i in range(1, n_facets + 1):
+            fig.update_yaxes(title_text="Reading", row=i, col=1, title_standoff=10)
+        fig.update_xaxes(title_text="Time", row=n_facets, col=1)
+
+        # Display in Streamlit
         st.plotly_chart(fig, use_container_width=True)
 
         labs_to_table = labs_to_table[
