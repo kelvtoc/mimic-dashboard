@@ -618,7 +618,7 @@ def display_welcome_screen():
     - **Procedures and Diagnoses**: Chronological records of interventions and clinical findings.
     """)
 
-def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_df):
+def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_df, generated_data):
     """Renders the patient overview tab using pre-stitched data."""
     st.header("Patient Overview")
 
@@ -650,6 +650,15 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         st.write(f"Marital Status: {safe_get(p_info, ['maritalStatus.coding', 0, 'code'], 'N/A')}")
         st.write(f"Organization: {org_name}")
         st.markdown("---")
+
+    # --- Generated Summaries ---
+    if generated_data["summary"] != "":
+        with st.expander("AI Generated Patient Summary"):
+            st.markdown(generated_data["summary"])
+    
+    if generated_data["questions"] != "":
+        with st.expander("AI Generated Possible Patient Questions"):
+            st.markdown(generated_data["questions"])
 
     # --- Encounter Display ---
     st.subheader("Admissions")
@@ -1269,6 +1278,9 @@ def main():
     # specimens_df = load_ndjson_data("data/mimic_assets/MimicSpecimen.ndjson")
     orgs_df = load_ndjson_data("data/mimic_assets/MimicOrganization.ndjson")
 
+    with open("data/mimic_assets/patient_summaries.json", "r") as f:
+        patient_summaries = json.load(f)
+
     with st.sidebar:
         st.title("👨‍⚕️ MIMIC Patient Viewer")
         uploaded_file = st.file_uploader("Choose a patient JSON file", type=['json'])
@@ -1295,9 +1307,18 @@ def main():
             
             tab_titles = ["📄 Overview", "❤️ Vitals", "🧪 Labs", "💊 Medications", "💉 Procedures", "📝 Documents"]
             overview, vitals, labs, medications, procedures, documents = st.tabs(tab_titles)
+
+            patient_id = patient_data["patient_id"].replace("Patient/", "")
+            generated_data = {
+                "summary": "",
+                "questions": ""
+            }
+            if patient_id in patient_summaries:
+                generated_data = patient_summaries[patient_id]
+
             
             with overview:
-                display_patient_overview(patient_data, stitched_encounters_df, locations_map, orgs_df)
+                display_patient_overview(patient_data, stitched_encounters_df, locations_map, orgs_df, generated_data)
             with vitals:
                 display_vitals_dashboard(stitched_encounters_df)
             with labs:
