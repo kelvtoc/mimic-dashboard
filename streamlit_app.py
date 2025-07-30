@@ -788,7 +788,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 else:
                     st.write("No vital signs data for this encounter.")
 
-            with st.expander("Observations"):
+            with st.expander("Observations (Chart events / Flowsheets)"):
                 obs_clean_df = enc_row['observations']
                 obs_clean_df.drop_duplicates(['Observation', 'Observation Group', 'Timestamp'], inplace=True)
 
