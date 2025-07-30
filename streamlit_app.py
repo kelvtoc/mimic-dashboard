@@ -328,6 +328,9 @@ def stitch_encounter_data(_data, locations_map, med_map):
                                     safe_get(comp, ['category', 0, 'coding', 0, 'code'])
                                 )
 
+                        if (pd.isna(vital_group)) or (vital_group == ''):
+                            vital_group = 'Vital Signs'
+
                         processed_vitals.append(
                             {
                                 'Timestamp': ts, 
@@ -366,7 +369,10 @@ def stitch_encounter_data(_data, locations_map, med_map):
                                 ['category', 0, 'coding', 0, 'display'],
                                 safe_get(row, ['category', 0, 'coding', 0, 'code'])
                             )
-                    
+
+                    if (pd.isna(vital_group)) or (vital_group == ''):
+                        vital_group = 'Vital Signs'
+                        
                     vital = safe_get(
                         row, 
                         ['code', 'coding', 0, 'display'], 
@@ -380,11 +386,40 @@ def stitch_encounter_data(_data, locations_map, med_map):
                             'Value': val
                         })
 
-        vitals_clean_df = pd.DataFrame(processed_vitals)
-        if not vitals_clean_df.empty:
-            vitals_clean_df.dropna(subset=['Value'], inplace=True)
-            vitals_clean_df['Timestamp'] = pd.to_datetime(vitals_clean_df['Timestamp'])
-            vitals_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
+        obs_vitals_df = pd.DataFrame(processed_vitals)
+        vitals_clean_df = pd.DataFrame()
+        observations_clean_df = pd.DataFrame()
+        labs_obs_clean_df = pd.DataFrame()
+
+        if not obs_vitals_df.empty:
+            vitals_clean_df = obs_vitals_df[obs_vitals_df.get('Vital Group').str.lower().str.contains('vital', na=False)]
+            observations_clean_df = obs_vitals_df[
+                (~obs_vitals_df.get('Vital Group').str.lower().str.contains('vital', na=False)) & 
+                (obs_vitals_df.get('Vital Group').str.lower() != 'labs')
+            ]
+            labs_obs_clean_df = obs_vitals_df[
+                obs_vitals_df.get('Vital Group').str.lower() == 'labs'
+            ]
+            if not labs_obs_clean_df.empty:
+                labs_obs_clean_df.rename(
+                    columns={'Vital': 'Lab Test'}, inplace=True
+                )
+                labs_obs_clean_df.dropna(subset=['Value'], inplace=True)
+                labs_obs_clean_df['Timestamp'] = pd.to_datetime(labs_obs_clean_df['Timestamp'])
+                labs_obs_clean_df.drop(columns=['Vital Group'], inplace=True)
+                labs_obs_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
+
+
+            if not vitals_clean_df.empty:
+                vitals_clean_df.dropna(subset=['Value'], inplace=True)
+                vitals_clean_df['Timestamp'] = pd.to_datetime(vitals_clean_df['Timestamp'])
+                vitals_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
+
+            if not observations_clean_df.empty:
+                observations_clean_df.dropna(subset=['Value'], inplace=True)
+                observations_clean_df.rename(columns={'Vital': 'Observation', 'Vital Group': 'Observation Group'}, inplace=True)
+                observations_clean_df['Timestamp'] = pd.to_datetime(observations_clean_df['Timestamp'])
+                observations_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
 
         # --- Labs ---
         if 'encounter.reference' in labs_df.columns:
@@ -436,7 +471,11 @@ def stitch_encounter_data(_data, locations_map, med_map):
                     'High Ref': high_ref
                 })
             
-            labs_clean_df = pd.DataFrame(labs_clean).dropna(subset=['Timestamp'])
+            labs_clean_df = pd.DataFrame(labs_clean)
+            if not labs_obs_clean_df.empty:
+                labs_clean_df = pd.concat([labs_clean_df, labs_obs_clean_df])
+
+            labs_clean_df.dropna(subset=['Timestamp'], inplace=True)
             labs_clean_df.sort_values(by=['Lab Test', 'Timestamp'], inplace=True, ascending=True)
 
         # --- Documents ---
@@ -540,6 +579,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
             'med_disp': meds_disp_df, 
             'med_admin': meds_admin_df, 
             'vitals': vitals_clean_df, 
+            'observations': observations_clean_df,
             'labs': labs_clean_df, 
             'microorg': enc_micro_df,
             'reports': enc_docs_df
@@ -724,17 +764,36 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
             with st.expander("Vitals"):
                 vitals_clean_df = enc_row['vitals']
                 vitals_clean_df.drop_duplicates(['Vital', 'Vital Group', 'Timestamp'], inplace=True)
+
+                
                 if not vitals_clean_df.empty:
-                    for group in vitals_clean_df['Vital Group'].sort_values(ascending=True).unique():
-                        st.subheader(group)
-                        vitals_clean_df_group = vitals_clean_df[vitals_clean_df['Vital Group'] == group]
-                        vitals_clean_df_group.sort_values('Timestamp', ascending=True, inplace=True)
-                        vitals_clean_df_group_pivot = vitals_clean_df_group.pivot(index='Vital', columns='Timestamp', values='Value')
-                        vitals_clean_df_group_pivot.reset_index(inplace=True)
-                        vitals_clean_df_group_pivot.fillna(value="", inplace=True)
-                        st.dataframe(vitals_clean_df_group_pivot, use_container_width=True, hide_index=True)
+                    # for group in vitals_clean_df['Vital Group'].sort_values(ascending=True).unique():
+                    #     st.subheader(group)
+                    # vitals_clean_df_group = vitals_clean_df[vitals_clean_df['Vital Group'] == group]
+                    vitals_clean_df.sort_values('Timestamp', ascending=True, inplace=True)
+                    vitals_clean_df_pivot = vitals_clean_df.pivot(index='Vital', columns='Timestamp', values='Value')
+                    vitals_clean_df_pivot.reset_index(inplace=True)
+                    vitals_clean_df_pivot.fillna(value="", inplace=True)
+                    st.dataframe(vitals_clean_df_pivot, use_container_width=True, hide_index=True)
                 else:
                     st.write("No vital signs data for this encounter.")
+
+            with st.expander("Observations"):
+                obs_clean_df = enc_row['observations']
+                obs_clean_df.drop_duplicates(['Observation', 'Observation Group', 'Timestamp'], inplace=True)
+
+                
+                if not obs_clean_df.empty:
+                    for group in obs_clean_df['Observation Group'].sort_values(ascending=True).unique():
+                        st.subheader(group)
+                        obs_clean_df_group = obs_clean_df[obs_clean_df['Observation Group'] == group]
+                        obs_clean_df_group.sort_values('Timestamp', ascending=True, inplace=True)
+                        obs_clean_df_group_pivot = obs_clean_df_group.pivot(index='Observation', columns='Timestamp', values='Value')
+                        obs_clean_df_group_pivot.reset_index(inplace=True)
+                        obs_clean_df_group_pivot.fillna(value="", inplace=True)
+                        st.dataframe(obs_clean_df_group_pivot, use_container_width=True, hide_index=True)
+                else:
+                    st.write("No observation data for this encounter.")
 
             with st.expander("Labs"):
                 labs_clean_df = enc_row['labs']
@@ -809,20 +868,20 @@ def display_vitals_dashboard(stitched_enc_df):
     # st.markdown("---")
     
     st.subheader("Vital Signs Over Time")
-    vitals_df['Vital_label'] = vitals_df['Vital Group'] + " - " + vitals_df['Vital']
-    unique_vitals = vitals_df['Vital_label'].sort_values(ascending=True).unique()
+    # vitals_df['Vital_label'] = vitals_df['Vital Group'] + " - " + vitals_df['Vital']
+    unique_vitals = vitals_df['Vital'].sort_values(ascending=True).unique()
     default_vitals = [
-        "Routine Vital Signs - Heart Rate", 
-        "Routine Vital Signs - Non Invasive Blood Pressure systolic", 
-        "Routine Vital Signs - Non Invasive Blood Pressure diastolic", 
-        "Respiratory - Respiratory Rate", 
-        "Routine Vital Signs - Temperature Fahrenheit", 
+        "Heart Rate", 
+        "Non Invasive Blood Pressure systolic", 
+        "Non Invasive Blood Pressure diastolic", 
+        "Respiratory Rate", 
+        "Temperature Fahrenheit", 
         "O2 saturation pulseoxymetry",
-        "Vital Signs - Heart rate",
-        "Vital Signs - Respiratory rate",
-        "Vital Signs - Body temperature",
-        " - Systolic blood pressure",
-        " - Diastolic blood pressure"
+        "Heart rate",
+        "Respiratory rate",
+        "Body temperature",
+        "Systolic blood pressure",
+        "Diastolic blood pressure"
     ]
 
     default_vitals = [g for g in default_vitals if g in unique_vitals]
@@ -842,7 +901,7 @@ def display_vitals_dashboard(stitched_enc_df):
     
     if selected_vitals:
         vitals_to_plot = vitals_df[
-            (vitals_df['Vital_label'].isin(selected_vitals)) & 
+            (vitals_df['Vital'].isin(selected_vitals)) & 
             (vitals_df['Timestamp'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
         ]
         vitals_to_table = vitals_to_plot.copy()
@@ -853,7 +912,7 @@ def display_vitals_dashboard(stitched_enc_df):
         vitals_to_plot = vitals_to_plot.dropna(subset=['Value'])
 
         # Create subplot figure with one row per vital sign
-        selected_vitals_to_plot = vitals_to_plot['Vital_label'].unique()
+        selected_vitals_to_plot = vitals_to_plot['Vital'].unique()
         n_facets = len(selected_vitals_to_plot)
         fig = make_subplots(
             rows=n_facets,
@@ -865,7 +924,7 @@ def display_vitals_dashboard(stitched_enc_df):
 
         # Add traces with custom hover template
         for i, vital in enumerate(selected_vitals_to_plot, start=1):
-            vital_data = vitals_to_plot[vitals_to_plot['Vital_label'] == vital]
+            vital_data = vitals_to_plot[vitals_to_plot['Vital'] == vital]
             
             # Format Timestamp for hover (assuming Timestamp is datetime)
             hover_timestamps = vital_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
@@ -888,7 +947,7 @@ def display_vitals_dashboard(stitched_enc_df):
                     mode='lines+markers',
                     name=vital,
                     line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
-                    customdata=list(zip(vital_data['Vital_label'], hover_timestamps, units)),  # Pass data for hover
+                    customdata=list(zip(vital_data['Vital'], hover_timestamps, units)),  # Pass data for hover
                     hovertemplate=hover_template
                 ),
                 row=i,
@@ -914,10 +973,10 @@ def display_vitals_dashboard(stitched_enc_df):
         st.plotly_chart(fig, use_container_width=True)
 
         vitals_to_table = vitals_to_table[
-            ~vitals_to_table['Vital_label'].isin(vitals_to_plot['Vital_label'].unique().tolist())
+            ~vitals_to_table['Vital'].isin(vitals_to_plot['Vital'].unique().tolist())
         ]
         if not vitals_to_table.empty:
-            vitals_to_table.sort_values(['Vital_label', 'Timestamp'], inplace=True)
+            vitals_to_table.sort_values(['Vital', 'Timestamp'], inplace=True)
             st.dataframe(vitals_to_table, use_container_width=True, hide_index=True)
         
 
