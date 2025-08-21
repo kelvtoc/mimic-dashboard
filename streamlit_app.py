@@ -75,9 +75,85 @@ def get_display_name(row, key_list):
         return display
     return row.get(key_list[0], 'N/A')
 
+def parse_date(value: str):
+    """Try parsing a string into a datetime object if it looks like a date."""
+    # Date formats without time
+    date_formats = [
+        "%b %d, %Y",      # Apr 01, 2025
+        "%B %d, %Y",      # April 01, 2025
+        "%m/%d/%Y",       # 04/01/2025
+        "%d-%b-%Y",       # 01-Apr-2025
+        "%Y-%m-%d",       # 2025-04-01
+        "%m-%d-%Y",       # 04-01-2025
+        "%b %d %Y",       # Apr 01 2025
+        "%B %d %Y",       # April 01 2025
+        "%d/%m/%Y",       # 01/04/2025 (day/month/year)
+        "%Y/%m/%d",       # 2025/04/01
+    ]
+    
+    # DateTime formats with time components
+    datetime_formats = [
+        "%Y-%m-%dT%H:%M:%S.%f",      # 2025-04-01T14:30:45.123456
+        # With comma separator
+        "%b %d, %Y %H:%M:%S",        # Apr 01, 2025 14:30:45
+        "%B %d, %Y %H:%M:%S",        # April 01, 2025 14:30:45
+        "%b %d, %Y %H:%M",           # Apr 01, 2025 14:30
+        "%B %d, %Y %H:%M",           # April 01, 2025 14:30
+        "%m/%d/%Y %H:%M:%S",         # 04/01/2025 14:30:45
+        "%m/%d/%Y %H:%M",            # 04/01/2025 14:30
+        
+        # Without comma separator
+        "%b %d %Y %H:%M:%S",         # Apr 01 2025 14:30:45
+        "%B %d %Y %H:%M:%S",         # April 01 2025 14:30:45
+        "%b %d %Y %H:%M",            # Apr 01 2025 14:30
+        "%B %d %Y %H:%M",            # April 01 2025 14:30
+        
+        # ISO-like formats
+        "%Y-%m-%d %H:%M:%S",         # 2025-04-01 14:30:45
+        "%Y-%m-%d %H:%M",            # 2025-04-01 14:30
+        "%Y-%m-%dT%H:%M:%S",         # 2025-04-01T14:30:45
+        "%Y-%m-%dT%H:%M",            # 2025-04-01T14:30
+        "%Y-%m-%dT%H:%M:%SZ",        # 2025-04-01T14:30:45Z
+        
+        # With AM/PM
+        "%b %d, %Y %I:%M:%S %p",     # Apr 01, 2025 2:30:45 PM
+        "%B %d, %Y %I:%M:%S %p",     # April 01, 2025 2:30:45 PM
+        "%b %d, %Y %I:%M %p",        # Apr 01, 2025 2:30 PM
+        "%B %d, %Y %I:%M %p",        # April 01, 2025 2:30 PM
+        "%m/%d/%Y %I:%M:%S %p",      # 04/01/2025 2:30:45 PM
+        "%m/%d/%Y %I:%M %p",         # 04/01/2025 2:30 PM
+        "%b %d %Y %I:%M:%S %p",      # Apr 01 2025 2:30:45 PM
+        "%B %d %Y %I:%M:%S %p",      # April 01 2025 2:30:45 PM
+        "%b %d %Y %I:%M %p",         # Apr 01 2025 2:30 PM
+        "%B %d %Y %I:%M %p",         # April 01 2025 2:30 PM
+        
+        # Other common formats
+        "%d-%b-%Y %H:%M:%S",         # 01-Apr-2025 14:30:45
+        "%d-%b-%Y %H:%M",            # 01-Apr-2025 14:30
+        "%m-%d-%Y %H:%M:%S",         # 04-01-2025 14:30:45
+        "%m-%d-%Y %H:%M",            # 04-01-2025 14:30
+        "%Y/%m/%d %H:%M:%S",         # 2025/04/01 14:30:45
+        "%Y/%m/%d %H:%M",            # 2025/04/01 14:30
+        "%d/%m/%Y %H:%M:%S",         # 01/04/2025 14:30:45
+        "%d/%m/%Y %H:%M",            # 01/04/2025 14:30
+    ]
+    
+    # Try datetime formats first (more specific)
+    all_formats = datetime_formats + date_formats
+    
+    for fmt in all_formats:
+        try:
+            return datetime.strptime(value, fmt)
+        except ValueError:
+            continue
+    return None
+
 def format_datetime(series, format_str='%Y-%m-%d %H:%M:%S'):
-    """Safely converts a series to datetime and formats it."""
-    return pd.to_datetime(series, errors='coerce').strftime(format_str)
+    """Safely converts a series to datetime and formats it."""    
+    try:
+        return parse_date(series).strftime(format_str) # pd.to_datetime(series, errors='coerce').strftime(format_str)
+    except:
+        return series
 
 def get_latest_vital(df, vital_name):
     """Gets the most recent value for a specific vital sign."""
@@ -138,6 +214,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
     vitals_df = pd.concat([_data.get('MimicObservationVitalSignsED', pd.DataFrame()), _data.get('MimicObservationChartevents', pd.DataFrame()), _data.get('MimicObservationED', pd.DataFrame()), _data.get('MimicObservationOutputevents', pd.DataFrame()), _data.get('MimicObservationDatetimeevents', pd.DataFrame())])
     micro_org_df = pd.concat([_data.get('MimicObservationMicroSusc', pd.DataFrame()), _data.get('MimicObservationMicroTest', pd.DataFrame()), _data.get('MimicObservationMicroOrg', pd.DataFrame())])
     labs_df = _data.get('MimicObservationLabevents', pd.DataFrame())
+    diag_df = _data.get('MimicDiagnosticReport', pd.DataFrame())
     docs_df = _data.get('MimicDocumentReference', pd.DataFrame())
 
     for _, enc_row in all_enc_df.iterrows():
@@ -517,6 +594,12 @@ def stitch_encounter_data(_data, locations_map, med_map):
         else:
             enc_docs_df = pd.DataFrame()
 
+        if 'encounter.reference' in diag_df.columns:
+            diag_df['encounter.reference'] = diag_df['encounter.reference'].apply(lambda x: x[0]['reference'] if isinstance(x, list) else x)
+            enc_diag_df = diag_df[diag_df.get('encounter.reference').isin(all_enc_ids)]
+        else:
+            enc_diag_df = pd.DataFrame()
+
         # --- Procedures ---
         if 'encounter.reference' in all_proc_df.columns:
             enc_procs_df = all_proc_df[all_proc_df.get('encounter.reference').isin(all_enc_ids)]
@@ -614,6 +697,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
             'observations': observations_clean_df,
             'labs': labs_clean_df, 
             'microorg': enc_micro_df,
+            'diagnostic_reports': enc_diag_df,
             'reports': enc_docs_df,
             'related_encounter_ids': related_enc_ids
         })
@@ -702,13 +786,21 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         enc_class = str(safe_get(enc_row, ['class.display'], 'Admission')).title()
 
         related_enc_ids = enc_row['related_encounter_ids']
-        expander_title = f"{enc_class}: {start_time.strftime('%Y-%m-%d')} to {end_time.strftime('%Y-%m-%d')} ({los} day(s)) - {first_condition}"
+        if pd.notna(start_time):
+            start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+        if pd.notna(end_time):
+            end_time = end_time.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            end_time = "Current"
+            los = "Current"
+        
+        expander_title = f"{enc_class}: {start_time} to {end_time} ({los} day(s)) - {first_condition}"
 
         with st.expander(expander_title):
             st.markdown("#### Admission Details")
             st.write(f"Admission ID: {enc_row.get('id')}")
-            st.write(f"Admit Date: {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
-            st.write(f"Discharge Date: {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+            st.write(f"Admit Date: {start_time}")
+            st.write(f"Discharge Date: {end_time}")
             st.write(f"Length of Stay: {los} day(s)")
             st.write(f"Admit Source: {safe_get(enc_row, ['hospitalization.admitSource.coding', 0, 'code'], 'N/A')}")
             st.write(f"Discharge Disposition: {safe_get(enc_row, ['hospitalization.dischargeDisposition.coding', 0, 'code'], 'N/A')}")
@@ -862,14 +954,34 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 else:
                     st.write("No microbiology data for this encounter.")
 
-            with st.expander("Reports"):
+            with st.expander("Diagnostic Reports"):
+                enc_diag_df = enc_row['diagnostic_reports']
+                if not enc_diag_df.empty:
+                    enc_diag_df.sort_values('effectiveDateTime', inplace=True)
+                    for _, row in enc_diag_df.iterrows():
+                        doc_title = safe_get(row, ['presentedForm', 0, 'title'], "Document")
+                        doc_date = row.get('effectiveDateTime', 'No Date')
+                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d %H:%M:%S')}**"):
+                            try:
+                                b64_data = safe_get(row, ['presentedForm', 0, 'data'])
+                                if b64_data:
+                                    text_data = base64.b64decode(b64_data).decode('UTF-8', errors='ignore')
+                                    st.text_area(f"{row['id']}", text_data, height=300)
+                                else:
+                                    st.warning("No data found for this document.")
+                            except Exception as e:
+                                st.error(f"Could not display document. Error: {e}")
+                else:
+                    st.write("No reports for this encounter.")
+
+            with st.expander("Clinical Documents"):
                 enc_docs_df = enc_row['reports']
                 if not enc_docs_df.empty:
                     enc_docs_df.sort_values('date', inplace=True)
                     for _, row in enc_docs_df.iterrows():
                         doc_title = safe_get(row, ['content', 0, 'attachment', 'title'], "Document")
                         doc_date = row.get('date', 'No Date')
-                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d')}**"):
+                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d %H:%M:%S')}**"):
                             try:
                                 b64_data = safe_get(row, ['content', 0, 'attachment', 'data'])
                                 if b64_data:
@@ -1263,12 +1375,14 @@ def display_documents(stitched_enc_df):
     all_documents = []
     for _, enc_row in stitched_enc_df.iterrows():
         all_documents.append(enc_row['reports'])
+        all_documents.append(enc_row['diagnostic_reports'])
     
     all_documents_df = pd.concat(all_documents)
     if all_documents_df.empty:
         st.write("No document data for this encounter.")
         return
 
+    all_documents_df['date'].fillna(all_documents_df['effectiveDateTime'], inplace=True)
     all_documents_df['date'] = pd.to_datetime(all_documents_df['date'])
 
     # add time slider
@@ -1280,16 +1394,35 @@ def display_documents(stitched_enc_df):
         key="doc_time_slider"
     )
     
+    all_documents_df['_type'] = all_documents_df['type.text'].fillna(all_documents_df['code.text'])
+    doc_types = (
+        all_documents_df['_type'].dropna().unique().tolist()
+    )
+    doc_types = list(set(doc_types))
+    document_type = st.multiselect(
+        "Select document type", 
+        options=doc_types,
+        default=doc_types
+    )
+
     all_documents_df = all_documents_df[
-        (all_documents_df['date'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
+        (all_documents_df['date'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1]))) & 
+        (all_documents_df['_type'].isin(document_type))
     ]
+
     all_documents_df.sort_values('date', inplace=True)
     for _, row in all_documents_df.iterrows():
-        doc_title = safe_get(row, ['content', 0, 'attachment', 'title'], "Document")
-        doc_date = row.get('date', 'No Date')
-        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d')}**"):
+        doc_title = safe_get(
+            row, ['content', 0, 'attachment', 'title'], 
+            safe_get(row, ['presentedForm', 0, 'title'], "Document")
+        )
+        doc_date = row.get('date')
+        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d %H:%M:%S')}**"):
             try:
-                b64_data = safe_get(row, ['content', 0, 'attachment', 'data'])
+                b64_data = safe_get(
+                    row, ['content', 0, 'attachment', 'data'], 
+                    safe_get(row, ['presentedForm', 0, 'data'])
+                )
                 if b64_data:
                     text_data = base64.b64decode(b64_data).decode('UTF-8', errors='ignore')
                     st.text_area(f"{row['id']}", text_data, height=300, key=row['id'])
