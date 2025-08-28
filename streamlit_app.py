@@ -1,12 +1,15 @@
-import streamlit as st
-import pandas as pd
-import json
+from __future__ import annotations
+
 import base64
+import json
 from datetime import datetime
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+
+import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit as st
 from plotly.subplots import make_subplots
-import io
 
 # --- Configuration & Constants ---
 st.set_page_config(page_title="MIMIC Patient Data Viewer", layout="wide", initial_sidebar_state="expanded")
@@ -14,34 +17,34 @@ st.set_page_config(page_title="MIMIC Patient Data Viewer", layout="wide", initia
 
 # --- Data Loading and Caching ---
 @st.cache_data
-def load_ndjson_data(file):
-    """Loads a newline-delimited JSON string into a DataFrame."""
+def load_ndjson_data(file: str) -> pd.DataFrame:
+    """Load a newline-delimited JSON file path into a DataFrame."""
     with open(file, 'r') as f:
         file_content_string = f.read()
     lines = file_content_string.strip().split('\n')
-    records = [json.loads(line) for line in lines]
+    records = [json.loads(line) for line in lines if line]
     return pd.json_normalize(records)
 
 @st.cache_data
-def load_patient_data(uploaded_file):
-    """Loads and parses the uploaded JSON patient file into a dictionary of DataFrames."""
+def load_patient_data(uploaded_file) -> Optional[Dict[str, pd.DataFrame]]:
+    """Load and parse the uploaded JSON patient file into a dict of DataFrames."""
     if uploaded_file is None:
         return None
-    
+
     try:
         file_content = uploaded_file.getvalue().decode("utf-8")
         data = json.loads(file_content)
-        
+
         patient_id = data.get('patient_id', 'Unknown Patient')
-        fhir_data = data.get('data', {})
-        
-        processed_data = {'patient_id': patient_id}
-        
+        fhir_data = data.get('data', {}) or {}
+
+        processed_data: Dict[str, pd.DataFrame] = {'patient_id': patient_id}  # type: ignore[assignment]
+
         for resource_type, records in fhir_data.items():
             if records:
                 processed_data[resource_type] = pd.json_normalize(records, max_level=3)
             else:
-                 processed_data[resource_type] = pd.DataFrame()
+                processed_data[resource_type] = pd.DataFrame()
 
         return processed_data
     except Exception as e:
@@ -75,7 +78,7 @@ def get_display_name(row, key_list):
         return display
     return row.get(key_list[0], 'N/A')
 
-def parse_date(value: str):
+def parse_date(value: str) -> Optional[datetime]:
     """Try parsing a string into a datetime object if it looks like a date."""
     # Date formats without time
     date_formats = [
@@ -148,12 +151,13 @@ def parse_date(value: str):
             continue
     return None
 
-def format_datetime(series, format_str='%Y-%m-%d %H:%M:%S'):
-    """Safely converts a series to datetime and formats it."""    
+def format_datetime(value: Any, format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
+    """Convert a value to formatted datetime string if possible, else return str(value)."""
     try:
-        return parse_date(series).strftime(format_str) # pd.to_datetime(series, errors='coerce').strftime(format_str)
-    except:
-        return series
+        dt = parse_date(str(value))
+        return dt.strftime(format_str) if dt else str(value)
+    except Exception:
+        return str(value)
 
 def get_latest_vital(df, vital_name):
     """Gets the most recent value for a specific vital sign."""
@@ -737,19 +741,22 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         p_info = patient_df.iloc[0]
         
         birth_date_str = p_info.get('birthDate')
+        birth_date_disp = "N/A"
         age = "N/A"
         if birth_date_str:
             try:
-                birth_date = datetime.strptime(birth_date_str.split('T')[0], '%Y-%m-%d')
+                birth_date = datetime.strptime(str(birth_date_str).split('T')[0], '%Y-%m-%d')
+                birth_date_disp = birth_date.strftime('%Y-%m-%d')
                 age = (datetime.now() - birth_date).days // 365
             except (ValueError, TypeError):
+                birth_date_disp = str(birth_date_str)
                 age = "Invalid Date"
         
         org_ref = p_info.get('managingOrganization.reference', '').replace('Organization/', '')
         org_name = org_map.get(org_ref, 'Unknown Org')
 
         st.write(f"Patient ID: {patient_data.get('patient_id', 'N/A').split('/')[-1]}")
-        st.write(f"Birth Date: {birth_date.strftime('%Y-%m-%d')}")
+        st.write(f"Birth Date: {birth_date_disp}")
         st.write(f"Age: {age}")
         st.write(f"Gender: {p_info.get('gender', 'N/A').capitalize()}")
         st.write(f"Race: {safe_get(p_info, ['extension', 0, 'extension', 1, 'valueString'], 'N/A')}")
@@ -994,8 +1001,8 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 else:
                     st.write("No reports for this encounter.")
 
-def display_vitals_dashboard(stitched_enc_df):
-    """Renders the vital signs dashboard."""
+def display_vitals_dashboard(stitched_enc_df: pd.DataFrame) -> None:
+    """Render the vital signs dashboard with table/graph toggle."""
     st.header("Vital Signs Dashboard")
 
     vitals_df = pd.DataFrame()
@@ -1061,88 +1068,69 @@ def display_vitals_dashboard(stitched_enc_df):
     )
     
     if selected_vitals:
-        vitals_to_plot = vitals_df[
-            (vitals_df['Vital'].isin(selected_vitals)) & 
+        # Filter selection and time window
+        selected = vitals_df[
+            (vitals_df['Vital'].isin(selected_vitals)) &
             (vitals_df['Timestamp'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
-        ]
-        vitals_to_table = vitals_to_plot.copy()
-        vitals_to_plot['Value'] = pd.to_numeric(
-            vitals_to_plot['Value'].str.extract(r'(\d*\.?\d+)')[0],
-            errors='coerce'
-        )
-        vitals_to_plot = vitals_to_plot.dropna(subset=['Value'])
+        ].copy()
 
-        # Create subplot figure with one row per vital sign
-        selected_vitals_to_plot = vitals_to_plot['Vital'].unique().tolist()
-        n_facets = len(selected_vitals_to_plot)
-        fig = make_subplots(
-            rows=n_facets,
-            cols=1,
-            shared_xaxes=True,  # Share x-axis (Timestamp) across subplots
-            vertical_spacing=0.05,  # Adjust spacing between subplots
-            subplot_titles=selected_vitals_to_plot  # Set subplot titles to lab test names
-        )
+        # View toggle
+        view = st.radio("View", ["Graph", "Table"], index=1, horizontal=True, key="vitals_view")
 
-        # Add traces with custom hover template
-        for i, vital in enumerate(selected_vitals_to_plot, start=1):
-            vital_data = vitals_to_plot[vitals_to_plot['Vital'] == vital]
-            
-            # Format Timestamp for hover (assuming Timestamp is datetime)
-            hover_timestamps = vital_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Include Unit in hover if available, otherwise use empty string
-            units = vital_data['Unit'] if 'Unit' in vital_data.columns else [''] * len(vital_data)
-            
-            # Custom hover template
-            hover_template = (
-                '<b>%{customdata[0]}</b><br>'  # Lab Test name
-                'Time: %{customdata[1]}<br>'   # Formatted Timestamp
-                'Value: %{y:.2f} %{customdata[2]}<br>'  # Value with unit
-                '<extra></extra>'  # Removes secondary box
+        if view == "Graph":
+            vitals_to_plot = selected.copy()
+            vitals_to_plot['NumericValue'] = pd.to_numeric(
+                vitals_to_plot['Value'].astype(str).str.extract(r'(\d*\.?\d+)')[0],
+                errors='coerce'
             )
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=vital_data['Timestamp'],
-                    y=vital_data['Value'],
-                    mode='lines+markers',
-                    name=vital,
-                    line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
-                    customdata=list(zip(vital_data['Vital'], hover_timestamps, units)),  # Pass data for hover
-                    hovertemplate=hover_template
-                ),
-                row=i,
-                col=1
+            vitals_to_plot = vitals_to_plot.dropna(subset=['NumericValue'])
+
+            selected_vitals_to_plot = vitals_to_plot['Vital'].unique().tolist()
+            n_facets = max(1, len(selected_vitals_to_plot))
+            fig = make_subplots(
+                rows=n_facets,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05,
+                subplot_titles=selected_vitals_to_plot if selected_vitals_to_plot else ["No data"]
             )
 
-        # Update layout
-        fig.update_layout(
-            height=200 * n_facets,
-            showlegend=False,
-            title_text="Vital Signs Trend",
-            title_x=0.5,
-            title_y=0.98,
-            margin=dict(t=100)
-        )
+            for i, vital in enumerate(selected_vitals_to_plot, start=1):
+                vital_data = vitals_to_plot[vitals_to_plot['Vital'] == vital]
+                hover_timestamps = vital_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                units = vital_data['Unit'] if 'Unit' in vital_data.columns else [''] * len(vital_data)
+                hover_template = (
+                    '<b>%{customdata[0]}</b><br>'
+                    'Time: %{customdata[1]}<br>'
+                    'Value: %{y:.2f} %{customdata[2]}<br>'
+                    '<extra></extra>'
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=vital_data['Timestamp'],
+                        y=vital_data['NumericValue'],
+                        mode='lines+markers',
+                        name=vital,
+                        line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
+                        customdata=list(zip(vital_data['Vital'], hover_timestamps, units)),
+                        hovertemplate=hover_template
+                    ),
+                    row=i,
+                    col=1
+                )
 
-        # Customize axes
-        for i in range(1, n_facets + 1):
-            fig.update_yaxes(title_text="Reading", row=i, col=1, title_standoff=10)
-        fig.update_xaxes(title_text="Time", row=n_facets, col=1)
-
-        # Display in Streamlit
-        st.plotly_chart(fig, use_container_width=True)
-
-        vitals_to_table = vitals_to_table[
-            ~vitals_to_table['Vital'].isin(vitals_to_plot['Vital'].unique().tolist())
-        ]
-        if not vitals_to_table.empty:
-            vitals_to_table.sort_values(['Vital', 'Timestamp'], inplace=True)
-            st.dataframe(vitals_to_table, use_container_width=True, hide_index=True)
+            fig.update_layout(height=200 * n_facets, showlegend=False, title_text="Vital Signs Trend", title_x=0.5, margin=dict(t=60))
+            for i in range(1, n_facets + 1):
+                fig.update_yaxes(title_text="Reading", row=i, col=1, title_standoff=10)
+            fig.update_xaxes(title_text="Time", row=n_facets, col=1)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            table = selected.sort_values(['Vital', 'Timestamp']).pivot_table(index='Timestamp', columns='Vital', values='Value', aggfunc='first')
+            st.dataframe(table, use_container_width=True)
         
 
-def display_labs_dashboard(stitched_enc_df):
-    """Renders the laboratory results tab."""
+def display_labs_dashboard(stitched_enc_df: pd.DataFrame) -> None:
+    """Render the laboratory results with table/graph toggle and microbiology table."""
     st.header("Laboratory Results")
     labs_df = pd.DataFrame()
     for _, enc_row in stitched_enc_df.iterrows():
@@ -1184,95 +1172,78 @@ def display_labs_dashboard(stitched_enc_df):
     )
     
     if selected_labs:
-        labs_to_plot = labs_df[
-            (labs_df['Lab Test'].isin(selected_labs)) & 
+        selected = labs_df[
+            (labs_df['Lab Test'].isin(selected_labs)) &
             (labs_df['Timestamp'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
-        ]
-        labs_to_table = labs_to_plot.copy()
-        labs_to_plot['Value'] = pd.to_numeric(
-            labs_to_plot['Value'].str.extract(r'(\d*\.?\d+)')[0],
-            errors='coerce'
-        )
-        labs_to_plot = labs_to_plot.dropna(subset=['Value'])
+        ].copy()
 
-        # Create subplot figure with one row per lab test
-        selected_labs_to_plot = labs_to_plot['Lab Test'].unique()
-        n_facets = len(selected_labs_to_plot)
-        fig = make_subplots(
-            rows=n_facets,
-            cols=1,
-            shared_xaxes=True,  # Share x-axis (Timestamp) across subplots
-            vertical_spacing=0.05,  # Adjust spacing between subplots
-            subplot_titles=selected_labs_to_plot  # Set subplot titles to lab test names
-        )
+        view = st.radio("View", ["Graph", "Table"], index=1, horizontal=True, key="labs_view")
 
-        # Add traces with custom hover template
-        for i, lab in enumerate(selected_labs_to_plot, start=1):
-            lab_data = labs_to_plot[labs_to_plot['Lab Test'] == lab]
-            
-            # Format Timestamp for hover (assuming Timestamp is datetime)
-            hover_timestamps = lab_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
-            
-            # Include Unit in hover if available, otherwise use empty string
-            units = lab_data['Unit'] if 'Unit' in lab_data.columns else [''] * len(lab_data)
-            
-            # Custom hover template
-            hover_template = (
-                '<b>%{customdata[0]}</b><br>'  # Lab Test name
-                'Time: %{customdata[1]}<br>'   # Formatted Timestamp
-                'Value: %{y:.2f} %{customdata[2]}<br>'  # Value with unit
-                '<extra></extra>'  # Removes secondary box
+        if view == "Graph":
+            labs_to_plot = selected.copy()
+            labs_to_plot['NumericValue'] = pd.to_numeric(
+                labs_to_plot['Value'].astype(str).str.extract(r'(\d*\.?\d+)')[0],
+                errors='coerce'
             )
-            
-            fig.add_trace(
-                go.Scatter(
-                    x=lab_data['Timestamp'],
-                    y=lab_data['Value'],
-                    mode='lines+markers',
-                    name=lab,
-                    line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
-                    customdata=list(zip(lab_data['Lab Test'], hover_timestamps, units)),  # Pass data for hover
-                    hovertemplate=hover_template
-                ),
-                row=i,
-                col=1
+            labs_to_plot = labs_to_plot.dropna(subset=['NumericValue'])
+
+            selected_labs_to_plot = labs_to_plot['Lab Test'].unique().tolist()
+            n_facets = max(1, len(selected_labs_to_plot))
+            fig = make_subplots(
+                rows=n_facets,
+                cols=1,
+                shared_xaxes=True,
+                vertical_spacing=0.05,
+                subplot_titles=selected_labs_to_plot if selected_labs_to_plot else ["No data"]
             )
 
-        # Update layout
-        fig.update_layout(
-            height=200 * n_facets,
-            showlegend=False,
-            title_text="Lab Results Trend",
-            title_x=0.5,
-            title_y=0.98,
-            margin=dict(t=100)
-        )
+            for i, lab in enumerate(selected_labs_to_plot, start=1):
+                lab_data = labs_to_plot[labs_to_plot['Lab Test'] == lab]
+                hover_timestamps = lab_data['Timestamp'].dt.strftime('%Y-%m-%d %H:%M:%S')
+                units = lab_data['Unit'] if 'Unit' in lab_data.columns else [''] * len(lab_data)
+                hover_template = (
+                    '<b>%{customdata[0]}</b><br>'
+                    'Time: %{customdata[1]}<br>'
+                    'Value: %{y:.2f} %{customdata[2]}<br>'
+                    '<extra></extra>'
+                )
+                fig.add_trace(
+                    go.Scatter(
+                        x=lab_data['Timestamp'],
+                        y=lab_data['NumericValue'],
+                        mode='lines+markers',
+                        name=lab,
+                        line=dict(color=f'rgb({i * 50 % 255}, {i * 100 % 255}, {i * 150 % 255})'),
+                        customdata=list(zip(lab_data['Lab Test'], hover_timestamps, units)),
+                        hovertemplate=hover_template
+                    ),
+                    row=i,
+                    col=1
+                )
 
-        # Customize axes
-        for i in range(1, n_facets + 1):
-            fig.update_yaxes(title_text="Reading", row=i, col=1, title_standoff=10)
-        fig.update_xaxes(title_text="Time", row=n_facets, col=1)
+            fig.update_layout(height=200 * n_facets, showlegend=False, title_text="Lab Results Trend", title_x=0.5, margin=dict(t=60))
+            for i in range(1, n_facets + 1):
+                fig.update_yaxes(title_text="Reading", row=i, col=1, title_standoff=10)
+            fig.update_xaxes(title_text="Time", row=n_facets, col=1)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            table = selected.sort_values(['Lab Test', 'Timestamp']).pivot_table(index='Timestamp', columns='Lab Test', values='Value', aggfunc='first')
+            st.dataframe(table, use_container_width=True)
 
-        # Display in Streamlit
-        st.plotly_chart(fig, use_container_width=True)
-
-        labs_to_table = labs_to_table[
-            ~labs_to_table['Lab Test'].isin(labs_to_plot['Lab Test'].unique().tolist())
-        ]
-        if not labs_to_table.empty:
-            labs_to_table.sort_values(['Lab Test', 'Timestamp'], inplace=True)
-            st.dataframe(labs_to_table, use_container_width=True, hide_index=True)
-
-    st.header("Microbiology")
-    microorg_df = enc_row['microorg']
-    if not microorg_df.empty:
+    st.subheader("Microbiology")
+    micro_df_list = [enc_row['microorg'] for _, enc_row in stitched_enc_df.iterrows()]
+    if micro_df_list:
+        microorg_df = pd.concat(micro_df_list)
         microorg_df = microorg_df[
             microorg_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1]))
         ]
-        microorg_df.sort_values('Time', ascending=True, inplace=True)
-        st.dataframe(microorg_df, use_container_width=True, hide_index=True)
+        if not microorg_df.empty:
+            microorg_df.sort_values('Time', ascending=True, inplace=True)
+            st.dataframe(microorg_df, use_container_width=True, hide_index=True)
+        else:
+            st.write("No microbiology data in selected range.")
     else:
-        st.write("No microbiology data for this encounter.")
+        st.write("No microbiology data for this patient.")
 
 
 def display_medications(stitched_enc_df):
