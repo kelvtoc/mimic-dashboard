@@ -2,14 +2,29 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
+import re
+import hashlib
 from datetime import datetime
+from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 from plotly.subplots import make_subplots
+
+# Module logger
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    # Avoid configuring logging multiple times in Streamlit reruns
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 # --- Configuration & Constants ---
 st.set_page_config(page_title="MIMIC Patient Data Viewer", layout="wide", initial_sidebar_state="expanded")
@@ -18,16 +33,32 @@ st.set_page_config(page_title="MIMIC Patient Data Viewer", layout="wide", initia
 # --- Data Loading and Caching ---
 @st.cache_data
 def load_ndjson_data(file: str) -> pd.DataFrame:
-    """Load a newline-delimited JSON file path into a DataFrame."""
-    with open(file, 'r') as f:
-        file_content_string = f.read()
-    lines = file_content_string.strip().split('\n')
-    records = [json.loads(line) for line in lines if line]
+    """
+    Load a newline-delimited JSON file into a DataFrame.
+
+    Args:
+        file: Path to the NDJSON file on disk.
+
+    Returns:
+        A pandas DataFrame of normalized JSON records.
+    """
+    with open(file, "r") as f:
+        lines = [line for line in f.read().splitlines() if line]
+    records = [json.loads(line) for line in lines]
     return pd.json_normalize(records)
 
 @st.cache_data
 def load_patient_data(uploaded_file) -> Optional[Dict[str, pd.DataFrame]]:
-    """Load and parse the uploaded JSON patient file into a dict of DataFrames."""
+    """
+    Load and parse an uploaded patient JSON file into DataFrames by resource type.
+
+    Args:
+        uploaded_file: Streamlit uploaded file-like object containing patient JSON.
+
+    Returns:
+        Mapping of resource type to DataFrame, with a special key 'patient_id'.
+        Returns None if parsing fails or file is not provided.
+    """
     if uploaded_file is None:
         return None
 
@@ -48,12 +79,83 @@ def load_patient_data(uploaded_file) -> Optional[Dict[str, pd.DataFrame]]:
 
         return processed_data
     except Exception as e:
+        logger.exception("Error loading or parsing uploaded patient file")
         st.error(f"Error loading or parsing file: {e}")
         return None
 
+
+def load_patient_data_file(path: str) -> Optional[Dict[str, pd.DataFrame]]:
+    """
+    Load a patient JSON from a local file path into the same structure as load_patient_data.
+    """
+    try:
+        with open(path, "r") as f:
+            data = json.load(f)
+
+        patient_id = data.get('patient_id', 'Unknown Patient')
+        fhir_data = data.get('data', {}) or {}
+
+        processed_data: Dict[str, pd.DataFrame] = {'patient_id': patient_id}  # type: ignore[assignment]
+        for resource_type, records in fhir_data.items():
+            processed_data[resource_type] = pd.json_normalize(records, max_level=3) if records else pd.DataFrame()
+        return processed_data
+    except Exception as e:
+        logger.exception("Error loading or parsing patient file path: %s", path)
+        st.error(f"Error loading or parsing file: {e}")
+        return None
+
+
+def list_default_patients(dir_path: str) -> List[Tuple[str, str]]:
+    """
+    List available default patient files.
+
+    Returns list of tuples (path, patient_id_from_filename).
+    """
+    try:
+        import os
+        files = [os.path.join(dir_path, f) for f in os.listdir(dir_path) if f.endswith('.json')]
+        results: List[Tuple[str, str]] = []
+        for p in sorted(files):
+            # Expect filenames like patient_<id>.json
+            fname = p.split('/')[-1]
+            patient_id = fname.replace('patient_', '').replace('.json', '')
+            results.append((p, patient_id))
+        return results
+    except Exception as e:
+        logger.warning("Could not list default patients in %s: %s", dir_path, e)
+        return []
+
+
+def pseudonymize_patient_id(patient_id: str) -> str:
+    """
+    Deterministically map a patient_id to a fake but human-friendly name.
+    """
+    first_names = [
+        'Alex', 'Riley', 'Jordan', 'Taylor', 'Casey', 'Avery', 'Quinn', 'Morgan', 'Drew', 'Reese',
+        'Rowan', 'Jamie', 'Skyler', 'Peyton', 'Cameron', 'Logan', 'Emerson', 'Hayden', 'Sawyer', 'Elliot'
+    ]
+    last_names = [
+        'Carter', 'Morgan', 'Brooks', 'Reed', 'Parker', 'Hayes', 'Bennett', 'Sullivan', 'Campbell', 'Collins',
+        'Gray', 'Morris', 'Mitchell', 'Bailey', 'Jensen', 'Wells', 'Rowe', 'Dawson', 'Hudson', 'Jasper'
+    ]
+    h = hashlib.md5(patient_id.encode('utf-8')).hexdigest()
+    fi = int(h[:8], 16) % len(first_names)
+    li = int(h[8:16], 16) % len(last_names)
+    return f"{first_names[fi]} {last_names[li]}"
+
 # --- Helper Functions ---
-def safe_get(dct, keys, default=None):
-    """Safely get a nested value from a dictionary."""
+def safe_get(dct: Any, keys: Sequence[Any], default: Any = None) -> Any:
+    """
+    Safely get a nested value from a dictionary or list.
+
+    Args:
+        dct: The nested structure (dict/list) to traverse.
+        keys: Sequence of keys or indices to follow.
+        default: Fallback value if any key/index is missing.
+
+    Returns:
+        The nested value if present; otherwise, the provided default.
+    """
     for key in keys:
         try:
             dct = dct[key]
@@ -61,97 +163,55 @@ def safe_get(dct, keys, default=None):
             return default
     return dct
 
-def format_value(val):
+def format_value(val: Any) -> str:
+    """Format numeric-like values cleanly; return string for non-numeric."""
     try:
-        # Convert to float and check if it's an integer
         num = float(val)
-        if num.is_integer():
-            return str(int(num))  # Return "1" for 1.0
-        return f"{num:.2f}"  # Return 2 decimal places for non-integer floats
+        return str(int(num)) if num.is_integer() else f"{num:.1f}"
     except (ValueError, TypeError):
-        return str(val)  # Return unchanged if string or invalid
+        return str(val)
 
-def get_display_name(row, key_list):
-    """Safely extracts display name from common FHIR structures."""
+def get_display_name(row: Mapping[str, Any], key_list: Sequence[Any]) -> str:
+    """Safely extract a display name from typical FHIR structures with fallback."""
     display = safe_get(row, key_list)
-    if display:
-        return display
-    return row.get(key_list[0], 'N/A')
+    return str(display) if display else str(row.get(key_list[0], "N/A"))
 
 def parse_date(value: str) -> Optional[datetime]:
-    """Try parsing a string into a datetime object if it looks like a date."""
-    # Date formats without time
+    """
+    Try parsing a string into a datetime object if it looks like a date.
+
+    Uses a curated set of formats; if none match, falls back to pandas parsing.
+    """
     date_formats = [
-        "%b %d, %Y",      # Apr 01, 2025
-        "%B %d, %Y",      # April 01, 2025
-        "%m/%d/%Y",       # 04/01/2025
-        "%d-%b-%Y",       # 01-Apr-2025
-        "%Y-%m-%d",       # 2025-04-01
-        "%m-%d-%Y",       # 04-01-2025
-        "%b %d %Y",       # Apr 01 2025
-        "%B %d %Y",       # April 01 2025
-        "%d/%m/%Y",       # 01/04/2025 (day/month/year)
-        "%Y/%m/%d",       # 2025/04/01
+        "%b %d, %Y", "%B %d, %Y", "%m/%d/%Y", "%d-%b-%Y", "%Y-%m-%d",
+        "%m-%d-%Y", "%b %d %Y", "%B %d %Y", "%d/%m/%Y", "%Y/%m/%d",
     ]
-    
-    # DateTime formats with time components
     datetime_formats = [
-        "%Y-%m-%dT%H:%M:%S.%f",      # 2025-04-01T14:30:45.123456
-        # With comma separator
-        "%b %d, %Y %H:%M:%S",        # Apr 01, 2025 14:30:45
-        "%B %d, %Y %H:%M:%S",        # April 01, 2025 14:30:45
-        "%b %d, %Y %H:%M",           # Apr 01, 2025 14:30
-        "%B %d, %Y %H:%M",           # April 01, 2025 14:30
-        "%m/%d/%Y %H:%M:%S",         # 04/01/2025 14:30:45
-        "%m/%d/%Y %H:%M",            # 04/01/2025 14:30
-        
-        # Without comma separator
-        "%b %d %Y %H:%M:%S",         # Apr 01 2025 14:30:45
-        "%B %d %Y %H:%M:%S",         # April 01 2025 14:30:45
-        "%b %d %Y %H:%M",            # Apr 01 2025 14:30
-        "%B %d %Y %H:%M",            # April 01 2025 14:30
-        
-        # ISO-like formats
-        "%Y-%m-%d %H:%M:%S",         # 2025-04-01 14:30:45
-        "%Y-%m-%d %H:%M",            # 2025-04-01 14:30
-        "%Y-%m-%dT%H:%M:%S",         # 2025-04-01T14:30:45
-        "%Y-%m-%dT%H:%M",            # 2025-04-01T14:30
-        "%Y-%m-%dT%H:%M:%SZ",        # 2025-04-01T14:30:45Z
-        
-        # With AM/PM
-        "%b %d, %Y %I:%M:%S %p",     # Apr 01, 2025 2:30:45 PM
-        "%B %d, %Y %I:%M:%S %p",     # April 01, 2025 2:30:45 PM
-        "%b %d, %Y %I:%M %p",        # Apr 01, 2025 2:30 PM
-        "%B %d, %Y %I:%M %p",        # April 01, 2025 2:30 PM
-        "%m/%d/%Y %I:%M:%S %p",      # 04/01/2025 2:30:45 PM
-        "%m/%d/%Y %I:%M %p",         # 04/01/2025 2:30 PM
-        "%b %d %Y %I:%M:%S %p",      # Apr 01 2025 2:30:45 PM
-        "%B %d %Y %I:%M:%S %p",      # April 01 2025 2:30:45 PM
-        "%b %d %Y %I:%M %p",         # Apr 01 2025 2:30 PM
-        "%B %d %Y %I:%M %p",         # April 01 2025 2:30 PM
-        
-        # Other common formats
-        "%d-%b-%Y %H:%M:%S",         # 01-Apr-2025 14:30:45
-        "%d-%b-%Y %H:%M",            # 01-Apr-2025 14:30
-        "%m-%d-%Y %H:%M:%S",         # 04-01-2025 14:30:45
-        "%m-%d-%Y %H:%M",            # 04-01-2025 14:30
-        "%Y/%m/%d %H:%M:%S",         # 2025/04/01 14:30:45
-        "%Y/%m/%d %H:%M",            # 2025/04/01 14:30
-        "%d/%m/%Y %H:%M:%S",         # 01/04/2025 14:30:45
-        "%d/%m/%Y %H:%M",            # 01/04/2025 14:30
+        "%Y-%m-%dT%H:%M:%S.%f",
+        "%b %d, %Y %H:%M:%S", "%B %d, %Y %H:%M:%S", "%b %d, %Y %H:%M", "%B %d, %Y %H:%M",
+        "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M",
+        "%b %d %Y %H:%M:%S", "%B %d %Y %H:%M:%S", "%b %d %Y %H:%M", "%B %d %Y %H:%M",
+        "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+        "%Y-%m-%dT%H:%M:%SZ",
+        "%b %d, %Y %I:%M:%S %p", "%B %d, %Y %I:%M:%S %p", "%b %d, %Y %I:%M %p", "%B %d, %Y %I:%M %p",
+        "%m/%d/%Y %I:%M:%S %p", "%m/%d/%Y %I:%M %p", "%b %d %Y %I:%M:%S %p", "%B %d %Y %I:%M:%S %p",
+        "%b %d %Y %I:%M %p", "%B %d %Y %I:%M %p",
+        "%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M", "%m-%d-%Y %H:%M:%S", "%m-%d-%Y %H:%M",
+        "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M",
     ]
-    
-    # Try datetime formats first (more specific)
-    all_formats = datetime_formats + date_formats
-    
-    for fmt in all_formats:
+    for fmt in [*datetime_formats, *date_formats]:
         try:
             return datetime.strptime(value, fmt)
         except ValueError:
             continue
-    return None
+    # Fallback: try pandas flexible parser
+    try:
+        parsed = pd.to_datetime(value, errors="coerce")
+        return None if pd.isna(parsed) else parsed.to_pydatetime()
+    except Exception:
+        return None
 
-def format_datetime(value: Any, format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
+def format_datetime(value: Any, format_str: str = "%m-%d-%Y %H:%M:%S") -> str:
     """Convert a value to formatted datetime string if possible, else return str(value)."""
     try:
         dt = parse_date(str(value))
@@ -159,51 +219,582 @@ def format_datetime(value: Any, format_str: str = '%Y-%m-%d %H:%M:%S') -> str:
     except Exception:
         return str(value)
 
-def get_latest_vital(df, vital_name):
-    """Gets the most recent value for a specific vital sign."""
-    latest = df[df['Vital'] == vital_name].sort_values(by='Timestamp', ascending=False)
-    if len(latest) > 0:
-        latest = latest.iloc[0]
-        value = latest['Value']
-        return value
-    return "N/A"
+def get_latest_vital(df: pd.DataFrame, vital_name: str) -> Any:
+    """Get the most recent value for a specific vital sign from a DataFrame."""
+    latest = (
+        df[df["Vital"] == vital_name]
+        .sort_values(by="Timestamp", ascending=False)
+        .head(1)
+    )
+    return latest.iloc[0]["Value"] if not latest.empty else "N/A"
 
-def style_lab_results(df):
-    """Applies color coding to lab results based on reference ranges."""
-    def highlight_abnormal(row):
-        style = ''
-        try:
-            low = float(row.get('Low Ref'))
-            high = float(row.get('High Ref'))
-            value = float(row.get('Value'))
-            
-            if pd.notnull(value):
-                if pd.notnull(low) and value < low:
-                    style = 'background-color: #FFCCCC'
-                elif pd.notnull(high) and value > high:
-                    style = 'background-color: #FFCCCC'
-        except (ValueError, TypeError):
-            pass 
-            
-        return [style] * len(row)
+# --- Condition grouping
+def get_condition_group(condition: str, icd_code: Optional[str] = None) -> str:
+    """
+    Classify ICD-9 condition as acute, chronic, or unspecified based on description and code.
+    
+    Args:
+        condition: ICD-9 condition description
+        icd_code: Optional ICD-9 code for additional context
+    
+    Returns:
+        str: 'acute', 'chronic', or 'unspecified'
+    """
+    if not condition or not isinstance(condition, str):
+        return "unspecified"
+    
+    condition_clean = re.sub(r'[^\w\s]', ' ', condition.lower().strip())
+    
+    # Expanded keyword sets with more comprehensive terms
+    acute_keywords = [
+        "acute", "sudden", "rapid", "abrupt", "initial", "new onset",
+        "emergency", "urgent", "severe", "crisis", "attack", "episode",
+        "flare", "exacerbation", "first", "primary"
+    ]
+    
+    chronic_keywords = [
+        "chronic", "persistent", "long-term", "longstanding", "recurrent",
+        "ongoing", "continuous", "permanent", "established", "old",
+        "history of", "sequela", "late effect", "residual", "stable"
+    ]
+    
+    unspecified_keywords = [
+        "unspecified", "nonspecific", "not specified", "not otherwise specified",
+        "nos", "unknown", "undetermined", "other", "unqualified"
+    ]
+    
+    # Check for explicit temporal indicators first (highest priority)
+    if any(keyword in condition_clean for keyword in acute_keywords):
+        return "acute"
+    elif any(keyword in condition_clean for keyword in chronic_keywords):
+        return "chronic"
+    elif any(keyword in condition_clean for keyword in unspecified_keywords):
+        return "unspecified"
+    
+    # Use ICD-9 code patterns if available
+    if icd_code:
+        # Many unspecified conditions end in .9
+        if icd_code.endswith('.9') or icd_code.endswith('9'):
+            return "unspecified"
+    
+    # Clinical condition patterns (disease-specific logic)
+    condition_patterns = get_condition_specific_patterns()
+    
+    for pattern_type, patterns in condition_patterns.items():
+        if any(pattern in condition_clean for pattern in patterns):
+            return pattern_type
+    
+    # Default to unspecified if no clear indicators
+    return "unspecified"
 
-    return df.style.apply(highlight_abnormal, axis=1)
+
+def get_condition_specific_patterns() -> Dict[str, List[str]]:
+    """
+    Disease-specific patterns that indicate temporal nature.
+    Based on clinical knowledge of conditions that are typically acute or chronic.
+    """
+    return {
+        "acute": [
+            # Infections (typically acute unless specified otherwise)
+            "pneumonia", "bronchitis", "gastroenteritis", "appendicitis",
+            "cellulitis", "abscess", "sepsis", "meningitis",
+            # Injuries and trauma
+            "fracture", "laceration", "contusion", "sprain", "strain",
+            "burn", "poisoning", "overdose",
+            # Acute medical events
+            "myocardial infarction", "stroke", "embolism", "thrombosis",
+            "hemorrhage", "infarction", "ischemia"
+        ],
+        "chronic": [
+            # Chronic diseases
+            "diabetes mellitus", "hypertension", "copd", "emphysema",
+            "cirrhosis", "arthritis", "osteoporosis", "dementia",
+            "parkinson", "multiple sclerosis", "epilepsy", "migraine",
+            "asthma", "bronchiectasis", "fibrosis", "nephritis",
+            # Cancer (generally chronic management)
+            "carcinoma", "sarcoma", "lymphoma", "leukemia", "neoplasm malignant"
+        ]
+    }
+
+
+def get_condition_group_with_confidence(condition: str, icd_code: Optional[str] = None) -> tuple[str, float]:
+    """
+    Enhanced version that returns classification with confidence score.
+    
+    Returns:
+        tuple: (classification, confidence_score)
+        confidence_score: 0.0-1.0, where 1.0 is highest confidence
+    """
+    classification = get_condition_group(condition, icd_code)
+    
+    condition_clean = re.sub(r'[^\w\s]', ' ', condition.lower().strip())
+    
+    # High confidence keywords
+    high_confidence_terms = {
+        "acute": ["acute", "sudden", "rapid", "emergency"],
+        "chronic": ["chronic", "persistent", "long-term", "longstanding"],
+        "unspecified": ["unspecified", "not specified", "nos"]
+    }
+    
+    # Check for high confidence indicators
+    for category, terms in high_confidence_terms.items():
+        if any(term in condition_clean for term in terms):
+            if category == classification:
+                return classification, 0.9
+    
+    # Medium confidence for disease-specific patterns
+    condition_patterns = get_condition_specific_patterns()
+    for pattern_type, patterns in condition_patterns.items():
+        if any(pattern in condition_clean for pattern in patterns):
+            if pattern_type == classification:
+                return classification, 0.7
+    
+    # Low confidence for defaults
+    return classification, 0.3
+
+# --- Vital sorting
+
+def get_medical_priority(name: str) -> int:
+    """
+    Assign priority scores for medical ordering preferences.
+    Lower scores appear first.
+    """
+    name_lower = name.lower()
+    
+    # Blood pressure ordering: systolic -> mean -> diastolic
+    if 'systolic' in name_lower:
+        return 1
+    elif 'diastolic' in name_lower:
+        return 2
+    elif 'mean' in name_lower and 'pressure' in name_lower:
+        return 3
+    
+    # Heart rate variations
+    elif 'heart rate' in name_lower and 'bpm' in name_lower:
+        return 1  # Prefer bpm notation
+    elif 'heart rate' in name_lower:
+        return 2
+    
+    # Temperature ordering: general -> specific
+    elif name_lower == 'body temperature':
+        return 1
+    elif 'temperature' in name_lower and '(f)' in name_lower:
+        return 2
+    elif 'temperature fahrenheit' in name_lower:
+        return 3
+    elif 'temperature site' in name_lower:
+        return 4
+    
+    return 0  # Default priority
+
+def levenshtein_distance(s1: str, s2: str) -> int:
+    """Calculate the Levenshtein distance between two strings."""
+    if len(s1) < len(s2):
+        return levenshtein_distance(s2, s1)
+
+    if len(s2) == 0:
+        return len(s1)
+
+    previous_row = list(range(len(s2) + 1))
+    for i, c1 in enumerate(s1):
+        current_row = [i + 1]
+        for j, c2 in enumerate(s2):
+            insertions = previous_row[j + 1] + 1
+            deletions = current_row[j] + 1
+            substitutions = previous_row[j] + (c1 != c2)
+            current_row.append(min(insertions, deletions, substitutions))
+        previous_row = current_row
+    
+    return previous_row[-1]
+
+def normalized_distance(s1: str, s2: str) -> float:
+    """Calculate normalized edit distance (0-1 scale)."""
+    max_len = max(len(s1), len(s2))
+    if max_len == 0:
+        return 0
+    return levenshtein_distance(s1, s2) / max_len
+
+def preprocess_column_name(name: str) -> str:
+    """Clean column name for better matching."""
+    # Convert to lowercase
+    cleaned = name.lower()
+    # Remove extra spaces and normalize
+    cleaned = re.sub(r'\s+', ' ', cleaned.strip())
+    # Optional: remove some punctuation but keep important ones
+    cleaned = re.sub(r'[^\w\s\(\)\[\]%°-]', '', cleaned)
+    return cleaned
+
+def calculate_group_similarity_score(group: List[str], processed_names_dict: Mapping[str, str]) -> float:
+    """
+    Calculate the average similarity within a group.
+    Lower scores indicate more similar items.
+    """
+    if len(group) <= 1:
+        return 0  # Single items have perfect similarity
+    
+    total_distance = 0
+    pair_count = 0
+    
+    for i in range(len(group)):
+        for j in range(i + 1, len(group)):
+            name1 = processed_names_dict[group[i]]
+            name2 = processed_names_dict[group[j]]
+            total_distance += normalized_distance(name1, name2)
+            pair_count += 1
+    
+    return total_distance / pair_count if pair_count > 0 else 0
+
+def find_similar_groups(column_names: List[str], similarity_threshold: float = 0.3) -> List[List[str]]:
+    """
+    Group similar column names using edit distance.
+    
+    Args:
+        column_names: List of column names
+        similarity_threshold: Maximum normalized distance to consider similar (0-1)
+    
+    Returns:
+        List of groups, where each group is a list of similar column names
+    """
+    # Preprocess names for better matching
+    processed_names = [preprocess_column_name(name) for name in column_names]
+    processed_names_dict: Dict[str, str] = {name: processed for name, processed in zip(column_names, processed_names)}
+    name_to_index: Dict[str, int] = {name: i for i, name in enumerate(column_names)}
+    
+    # Create similarity matrix
+    n = len(column_names)
+    similarity_matrix = np.zeros((n, n))
+    
+    for i in range(n):
+        for j in range(i+1, n):
+            dist = normalized_distance(processed_names[i], processed_names[j])
+            similarity_matrix[i][j] = dist
+            similarity_matrix[j][i] = dist
+    
+    # Group similar items
+    visited = set()
+    groups = []
+    
+    for i in range(n):
+        if i in visited:
+            continue
+            
+        # Start a new group with current item
+        current_group = [column_names[i]]
+        visited.add(i)
+        
+        # Find all items similar to current item
+        for j in range(i+1, n):
+            if j not in visited and similarity_matrix[i][j] <= similarity_threshold:
+                current_group.append(column_names[j])
+                visited.add(j)
+        
+        # Also check if any remaining items are similar to items already in group
+        group_changed = True
+        while group_changed:
+            group_changed = False
+            group_indices = [name_to_index[name] for name in current_group]
+            
+            for k in range(n):
+                if k in visited:
+                    continue
+                
+                # Check if item k is similar to any item in current group
+                min_dist_to_group = min(similarity_matrix[k][idx] for idx in group_indices)
+                if min_dist_to_group <= similarity_threshold:
+                    current_group.append(column_names[k])
+                    visited.add(k)
+                    group_changed = True
+
+        # Sort items within each group by medical priority
+        current_group.sort(key=lambda x: get_medical_priority(x))
+        groups.append(current_group)
+    
+    # Sort groups by their internal similarity (most similar groups first)
+    groups.sort(key=lambda group: calculate_group_similarity_score(group, processed_names_dict))
+    
+    return groups
+
+def sort_similar_groups(column_names: List[str], similarity_threshold: float = 0.3) -> List[str]:
+    """
+    Sort column names by grouping similar ones together and sorting groups by similarity.
+    
+    Args:
+        column_names: List of column names to sort
+        similarity_threshold: Maximum normalized distance to consider similar (0-1)
+    
+    Returns:
+        Flat list of column names sorted by groups and similarity
+    """
+    groups = find_similar_groups(column_names, similarity_threshold)
+    return [item for sublist in groups for item in sublist]
+
+# --- Lab Sorting
+
+class GenericLabSorter:
+    """Utility to categorize and sort lab names into clinically relevant groups."""
+
+    def __init__(self) -> None:
+        # Define sorting categories with flexible matching keywords
+        self.sorting_categories = {
+            'Chemistry_Basic': {
+                'keywords': ['glucose', 'sodium', 'potassium', 'chloride', 'bicarbonate', 'co2', 
+                           'bun', 'urea', 'creatinine', 'anion gap', 'osmolality'],
+                'priority': 1
+            },
+            
+            'Chemistry_Extended': {
+                'keywords': ['albumin', 'protein', 'calcium', 'phosph', 'magnesium', 'iron',
+                           'b12', 'folate', 'tsh', 'vitamin'],
+                'priority': 2
+            },
+            
+            'Liver_Related': {
+                'keywords': ['alt', 'alanine', 'ast', 'aspartate', 'alkaline', 'phosphatase',
+                           'bilirubin', 'bili', 'hepatic', 'liver'],
+                'priority': 3
+            },
+            
+            'Cardiac_Related': {
+                'keywords': ['troponin', 'ck', 'creatine kinase', 'bnp', 'natiuretic', 'cardiac',
+                           'heart', 'ck-mb', 'ldh', 'lactate dehydrogenase'],
+                'priority': 4
+            },
+            
+            'Hematology_Complete': {
+                'keywords': ['wbc', 'white blood', 'rbc', 'red blood', 'hemoglobin', 'hematocrit',
+                           'platelet', 'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte'],
+                'priority': 5
+            },
+            
+            'Hematology_Differential': {
+                'keywords': ['neutrophil', 'lymphocyte', 'monocyte', 'eosinophil', 'basophil',
+                           'absolute', 'differential', 'basos', 'eos', 'lymphs', 'monos', 'neuts'],
+                'priority': 6
+            },
+            
+            'Blood_Gas': {
+                'keywords': ['ph', 'pco2', 'po2', 'co2 pressure', 'o2 pressure', 'o2 saturation',
+                           'oxygen', 'base excess', 'arterial', 'venous', 'lactate', 'lactic'],
+                'priority': 7
+            },
+            
+            'Coagulation': {
+                'keywords': ['pt', 'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
+                           'coagulation', 'clotting'],
+                'priority': 8
+            },
+            
+            'Hormones_Endocrine': {
+                'keywords': ['hormone', 'parathyroid', 'pth', 'thyroid', 'tsh', 't4', 't3',
+                           'cortisol', 'insulin', 'hba1c', 'hemoglobin a1c'],
+                'priority': 9
+            },
+            
+            'Inflammatory_Immune': {
+                'keywords': ['crp', 'esr', 'sed rate', 'complement', 'immunoglobulin', 'rheumatoid',
+                           'ana', 'antinuclear'],
+                'priority': 10
+            },
+            
+            'Enzymes_Other': {
+                'keywords': ['lipase', 'amylase', 'aldolase', 'enzyme', 'kinase', 'transferase',
+                           'dehydrogenase', 'haptoglobin'],
+                'priority': 11
+            },
+            
+            'Urine_Analysis': {
+                'keywords': ['urine', 'urinalysis', 'specific gravity', 'ketone', 'nitrite',
+                           'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen'],
+                'priority': 12
+            },
+            
+            'Drugs_Toxicology': {
+                'keywords': ['vancomycin', 'digoxin', 'lithium', 'drug', 'toxic', 'level',
+                           'therapeutic', 'peak', 'trough'],
+                'priority': 13
+            },
+            
+            'Specimen_Info': {
+                'keywords': ['hold', 'tube', 'collection', 'specimen', 'temperature', 'appearance',
+                           'color', 'mucous', 'edta', 'green top'],
+                'priority': 14
+            }
+        }
+
+    def clean_lab_name(self, lab_name: str) -> str:
+        """Clean lab name for better matching"""
+        # Convert to lowercase for matching
+        cleaned = lab_name.lower().strip()
+        
+        # Remove common suffixes/prefixes that don't affect categorization
+        cleaned = re.sub(r'\s*\([^)]*\)', '', cleaned)  # Remove units in parentheses
+        cleaned = re.sub(r'\s*#/\w+', '', cleaned)      # Remove count units like #/hpf
+        cleaned = re.sub(r'^(calculated|arterial|venous|total|free|ionized)\s+', '', cleaned)
+        cleaned = re.sub(r'\s+(serum|plasma|whole blood|urine|dipstick|units)$', '', cleaned)
+        
+        return cleaned.strip()
+
+    def calculate_similarity(self, text1: str, text2: str) -> float:
+        """Calculate similarity between two text strings"""
+        return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
+
+    def find_best_category(self, lab_name: str, threshold: float = 0.3) -> Tuple[str, float]:
+        """Find the best matching category for a lab name"""
+        cleaned_name = self.clean_lab_name(lab_name)
+        best_category = 'Uncategorized'
+        best_score = 0.0
+        
+        for category, info in self.sorting_categories.items():
+            category_score = 0.0
+            
+            # Check for keyword matches (exact substring match gets high score)
+            for keyword in info['keywords']:
+                if keyword in cleaned_name:
+                    category_score = max(category_score, 0.9)
+                else:
+                    # Check for partial matches using similarity
+                    similarity = self.calculate_similarity(keyword, cleaned_name)
+                    if similarity > threshold:
+                        category_score = max(category_score, similarity * 0.7)
+            
+            # Bonus for multiple keyword matches
+            keyword_matches = sum(1 for keyword in info['keywords'] if keyword in cleaned_name)
+            if keyword_matches > 1:
+                category_score += 0.1 * keyword_matches
+            
+            if category_score > best_score:
+                best_score = category_score
+                best_category = category
+        
+        return best_category, best_score
+
+    def sort_labs(self, lab_list: List[str], similarity_threshold: float = 0.3) -> Dict[str, List[Tuple[str, float]]]:
+        """Sort labs into categories with confidence scores"""
+        sorted_labs = {}
+        
+        for lab in lab_list:
+            category, confidence = self.find_best_category(lab, similarity_threshold)
+            
+            if category not in sorted_labs:
+                sorted_labs[category] = []
+            
+            sorted_labs[category].append((lab, confidence))
+        
+        # Sort categories by priority, then sort labs within each category alphabetically
+        final_sorted: Dict[str, List[Tuple[str, float]]] = {}
+        
+        # Get category priorities
+        category_priorities = {cat: info['priority'] for cat, info in self.sorting_categories.items()}
+        category_priorities['Uncategorized'] = 999  # Put uncategorized last
+        
+        # Sort categories by priority
+        sorted_categories = sorted(sorted_labs.keys(), key=lambda x: category_priorities.get(x, 999))
+        
+        for category in sorted_categories:
+            # Sort labs within category alphabetically
+            final_sorted[category] = sorted(sorted_labs[category], key=lambda x: x[0])
+        
+        return final_sorted
+
+    def get_simple_sorted_list(self, lab_list: List[str]) -> List[str]:
+        """Get a simple alphabetically sorted list within categories"""
+        sorted_labs = self.sort_labs(lab_list)
+        result = []
+        
+        for category in sorted(sorted_labs.keys(), 
+                             key=lambda x: self.sorting_categories.get(x, {}).get('priority', 999)):
+            for lab, _ in sorted_labs[category]:
+                result.append(lab)
+        
+        return result
+
+    def find_similar_labs(self, lab_list: List[str], similarity_threshold: float = 0.7) -> Dict[str, List[str]]:
+        """Find groups of similar lab names (useful for identifying duplicates or variants)"""
+        similar_groups = {}
+        processed = set()
+        
+        for i, lab1 in enumerate(lab_list):
+            if lab1 in processed:
+                continue
+                
+            similar_labs = [lab1]
+            processed.add(lab1)
+            
+            for j, lab2 in enumerate(lab_list[i+1:], i+1):
+                if lab2 in processed:
+                    continue
+                    
+                similarity = self.calculate_similarity(
+                    self.clean_lab_name(lab1), 
+                    self.clean_lab_name(lab2)
+                )
+                
+                if similarity >= similarity_threshold:
+                    similar_labs.append(lab2)
+                    processed.add(lab2)
+            
+            if len(similar_labs) > 1:
+                # Use the shortest name as the group key
+                group_key = min(similar_labs, key=len)
+                similar_groups[group_key] = similar_labs
+        
+        return similar_groups
 
 # --- Data Stitching Logic ---
 # @st.cache_data
+def prepare_grouped_conditions(enc_conditions_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Build a grouped conditions DataFrame with columns Condition, Code, Group.
+
+    Mirrors the UI’s logic to ensure identical results.
+    """
+    if enc_conditions_df is None or enc_conditions_df.empty:
+        return pd.DataFrame(columns=["Condition", "Code", "Group"])  # empty structure
+
+    cond_list = [
+        safe_get(row["code.coding"], [0, "display"], "N/A")
+        for _, row in enc_conditions_df.iterrows()
+    ]
+    code_list = [
+        safe_get(row["code.coding"], [0, "code"], "N/A")
+        for _, row in enc_conditions_df.iterrows()
+    ]
+    cond_df = pd.DataFrame({"Condition": cond_list, "Code": code_list})
+    cond_df["Group"] = cond_df["Condition"].apply(get_condition_group)
+    return cond_df
+
+
+def prepare_lab_sorted_groups(labs_clean_df: pd.DataFrame) -> Dict[str, List[str]]:
+    """
+    Categorize labs into groups using GenericLabSorter and return mapping of
+    category -> list of lab names in display order.
+    """
+    if labs_clean_df is None or labs_clean_df.empty:
+        return {}
+
+    sorter = GenericLabSorter()
+    unique_labs = sorted(labs_clean_df["Lab Test"].unique().tolist())
+    sorted_labs = sorter.sort_labs(unique_labs)
+    # Convert (lab, confidence) tuples to just lab names, preserving order
+    return {cat: [lab for lab, _ in items] for cat, items in sorted_labs.items()}
+
+
 def stitch_encounter_data(_data, locations_map, med_map):
     """Stitches all related patient data into a single encounters DataFrame."""
     
     # Combine all encounter types
     enc_df = _data.get('MimicEncounter', pd.DataFrame())
+    enc_df['_type'] = 'Inpatient'
     enc_ed_df = _data.get('MimicEncounterED', pd.DataFrame())
+    enc_ed_df['_type'] = 'Emergency'
     enc_icu_df = _data.get('MimicEncounterICU', pd.DataFrame())
+    enc_icu_df['_type'] = 'ICU'
     
-    all_enc_df = pd.concat([enc_df, enc_ed_df], ignore_index=True)
+    all_enc_df = pd.concat([enc_df, enc_ed_df, enc_icu_df], ignore_index=True)
     if all_enc_df.empty:
         return pd.DataFrame()
         
-    all_enc_df.sort_values(by='period.start', inplace=True)
+    all_enc_df.sort_values(by='period.start', inplace=True, ascending=False)
     all_enc_df.reset_index(drop=True, inplace=True)
 
     # Prepare for stitching
@@ -248,16 +839,16 @@ def stitch_encounter_data(_data, locations_map, med_map):
                 related_enc_ids.append({
                     "id": icu['id'],
                     "location": "ICU",
-                    "start": pd.to_datetime(icu['period.start']).strftime('%Y-%m-%d %H:%M:%S'),
-                    "end": pd.to_datetime(icu['period.end']).strftime('%Y-%m-%d %H:%M:%S')
+                    "start": format_datetime(icu['period.start']),
+                    "end": format_datetime(icu['period.end'])
                 })
         if len(ed_enc_data) > 0:
             for _, ed in ed_enc_data.iterrows():
                 related_enc_ids.append({
                     "id": ed['id'],
                     "location": "ED",
-                    "start": pd.to_datetime(ed['period.start']).strftime('%Y-%m-%d %H:%M:%S'),
-                    "end": pd.to_datetime(ed['period.end']).strftime('%Y-%m-%d %H:%M:%S')
+                    "start": format_datetime(ed['period.start']),
+                    "end": format_datetime(ed['period.end'])
                 })
         
 
@@ -295,13 +886,13 @@ def stitch_encounter_data(_data, locations_map, med_map):
                     start = safe_get(row, ['dispenseRequest.validityPeriod.start'], 'N/A')
                     if (start != 'N/A') and pd.notna(start):
                         try:
-                            start = pd.to_datetime(start).strftime('%Y-%m-%d %H:%M:%S')
+                            start = format_datetime(start)
                         except ValueError:
                             pass
                     end = safe_get(row, ['dispenseRequest.validityPeriod.end'], 'N/A')
                     if (end != 'N/A') and pd.notna(end):
                         try:
-                            end = pd.to_datetime(end).strftime('%Y-%m-%d %H:%M:%S')
+                            end = format_datetime(end)
                         except ValueError:
                             pass
                     
@@ -310,7 +901,8 @@ def stitch_encounter_data(_data, locations_map, med_map):
                             'Time': row.get('authoredOn'),
                             'Medication': med_name,
                             'Status': row.get('status'),
-                            'Period': f"{start} - {end}",
+                            'Start': start,
+                            'End': end,
                             'Dose': safe_get(row, ['dosageInstruction', 0, 'text']),
                             'Route': safe_get(row, ['dosageInstruction', 0, 'route', 'coding', 0, 'code'], 'N/A'),
                         }
@@ -321,6 +913,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
             meds_req_df['Time'] = pd.to_datetime(meds_req_df['Time'], errors='coerce')
             meds_req_df = meds_req_df.dropna(subset=['Time', 'Medication'])
             meds_req_df.sort_values(by=['Medication', 'Time'], inplace=True, ascending=True)
+            meds_req_df['Time'] = meds_req_df['Time'].apply(format_datetime)
 
         meds_disp_list = []
         if not enc_med_disp.empty:
@@ -348,6 +941,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
             meds_disp_df['Time'] = pd.to_datetime(meds_disp_df['Time'], errors='coerce')
             meds_disp_df = meds_disp_df.dropna(subset=['Time', 'Medication'])
             meds_disp_df.sort_values(by=['Medication', 'Time'], inplace=True, ascending=True)
+            meds_disp_df['Time'] = meds_disp_df['Time'].apply(format_datetime)
         
         meds_admin_list = []
         if not enc_med_admin.empty:
@@ -387,6 +981,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
         if not meds_admin_df.empty:
             meds_admin_df['Time'] = pd.to_datetime(meds_admin_df['Time'], errors='coerce')
             meds_admin_df.sort_values(by=['Medication', 'Time'], inplace=True, ascending=True)
+            meds_admin_df['Time'] = meds_admin_df['Time'].apply(format_datetime)
 
         # --- Vitals ---
         if ('encounter.reference' in vitals_df.columns) and ('context.reference' in vitals_df.columns):
@@ -409,29 +1004,11 @@ def stitch_encounter_data(_data, locations_map, med_map):
                 components = row.get('component')
                 if isinstance(components, list):
                     for comp in components:
-                        val = ''
-                        if 'valueString' in comp:
-                            if not pd.isna(comp['valueString']):
-                                val = comp['valueString']
-                        if 'valueQuantity' in comp:
-                            if not pd.isna(comp['valueQuantity']):
-                                val = format_value(comp['valueQuantity']['value'])
-                                if 'unit' in comp['valueQuantity']:
-                                    if not pd.isna(comp['valueQuantity']['unit']):
-                                        val += str(comp['valueQuantity']['unit'])
-                        if 'valueQuantity.value' in comp:
-                            if not pd.isna(comp['valueQuantity.value']):
-                                val = format_value(comp['valueQuantity.value'])
-                                if 'valueQuantity.unit' in comp:
-                                    if not pd.isna(comp['valueQuantity.unit']):
-                                        val += str(comp['valueQuantity.unit'])
-                        
                         vital = safe_get(
                             comp, 
                             ['code', 'coding', 0, 'display'], 
                             safe_get(comp, ['code.coding', 0, 'display'])
                         )
-
                         vital_group = ''
                         if 'category' in comp:
                             if not pd.isna(comp['category']):
@@ -442,7 +1019,24 @@ def stitch_encounter_data(_data, locations_map, med_map):
                                 )
 
                         if (pd.isna(vital_group)) or (vital_group == ''):
-                            vital_group = 'Vital Signs'
+                            vital_group = 'Vital Signs' 
+
+                        val = ''
+                        if 'valueString' in comp:
+                            if not pd.isna(comp['valueString']):
+                                val = comp['valueString']
+                        if 'valueQuantity' in comp:
+                            if not pd.isna(comp['valueQuantity']):
+                                val = format_value(comp['valueQuantity']['value'])
+                                if 'unit' in comp['valueQuantity']:
+                                    if not pd.isna(comp['valueQuantity']['unit']):
+                                        vital += f" ({str(comp['valueQuantity']['unit'])})"
+                        if 'valueQuantity.value' in comp:
+                            if not pd.isna(comp['valueQuantity.value']):
+                                val = format_value(comp['valueQuantity.value'])
+                                if 'valueQuantity.unit' in comp:
+                                    if not pd.isna(comp['valueQuantity.unit']):
+                                        vital += f" ({str(comp['valueQuantity.unit'])})"
 
                         processed_vitals.append(
                             {
@@ -452,28 +1046,6 @@ def stitch_encounter_data(_data, locations_map, med_map):
                                 'Value': val
                             })
                 else:
-                    val = ''
-                    if 'valueString' in row:
-                        # check if valueString has a value
-                        if not pd.isna(row['valueString']):
-                            val = row['valueString']
-                    if 'valueQuantity' in row:
-                        # check if valueQuantity has a value
-                        if not pd.isna(row['valueQuantity']):
-                            if 'value' in row['valueQuantity']:
-                                if not pd.isna(row['valueQuantity']['value']):
-                                    val = format_value(row['valueQuantity']['value'])
-                                if 'unit' in row['valueQuantity']:
-                                    if not pd.isna(row['valueQuantity']['unit']):
-                                        val += str(row['valueQuantity']['unit'])
-                    if 'valueQuantity.value' in row:
-                        # check if valueQuantity.value has a value
-                        if not pd.isna(row['valueQuantity.value']):
-                            val = format_value(row['valueQuantity.value'])
-                            if 'valueQuantity.unit' in row:
-                                if not pd.isna(row['valueQuantity.unit']):
-                                    val += str(row['valueQuantity.unit'])
-
                     vital_group = ''
                     if 'category' in row:
                         if not pd.isna(row['category']):
@@ -491,6 +1063,29 @@ def stitch_encounter_data(_data, locations_map, med_map):
                         ['code', 'coding', 0, 'display'], 
                         safe_get(row, ['code.coding', 0, 'display'])
                     )
+                    val = ''
+                    if 'valueString' in row:
+                        # check if valueString has a value
+                        if not pd.isna(row['valueString']):
+                            val = row['valueString']
+                    if 'valueQuantity' in row:
+                        # check if valueQuantity has a value
+                        if not pd.isna(row['valueQuantity']):
+                            if 'value' in row['valueQuantity']:
+                                if not pd.isna(row['valueQuantity']['value']):
+                                    val = format_value(row['valueQuantity']['value'])
+                                if 'unit' in row['valueQuantity']:
+                                    if not pd.isna(row['valueQuantity']['unit']):
+                                        vital += f" ({str(row['valueQuantity']['unit'])})"
+                    if 'valueQuantity.value' in row:
+                        # check if valueQuantity.value has a value
+                        if not pd.isna(row['valueQuantity.value']):
+                            val = format_value(row['valueQuantity.value'])
+                            if 'valueQuantity.unit' in row:
+                                if not pd.isna(row['valueQuantity.unit']):
+                                    vital += f" ({str(row['valueQuantity.unit'])})"
+
+                    
                     processed_vitals.append(
                         {
                             'Timestamp': ts, 
@@ -505,9 +1100,18 @@ def stitch_encounter_data(_data, locations_map, med_map):
         labs_obs_clean_df = pd.DataFrame()
 
         if not obs_vitals_df.empty:
-            vitals_clean_df = obs_vitals_df[obs_vitals_df.get('Vital Group').str.lower().str.contains('vital', na=False)]
+            # remove survey
+            obs_vitals_df = obs_vitals_df[~obs_vitals_df.get('Vital Group').str.lower().str.contains('survey', na=False)]
+            # remove called out
+            obs_vitals_df = obs_vitals_df[~obs_vitals_df.get('Vital').str.lower().str.contains('called out', na=False)]
+
+            vitals_clean_df = obs_vitals_df[
+                (obs_vitals_df.get('Vital Group').str.lower().str.contains('vital', na=False)) |
+                (obs_vitals_df.get('Vital Group').str.lower().str.contains('general', na=False))
+            ]
             observations_clean_df = obs_vitals_df[
                 (~obs_vitals_df.get('Vital Group').str.lower().str.contains('vital', na=False)) & 
+                (~obs_vitals_df.get('Vital Group').str.lower().str.contains('general', na=False)) & 
                 (obs_vitals_df.get('Vital Group').str.lower() != 'labs')
             ]
             labs_obs_clean_df = obs_vitals_df[
@@ -521,18 +1125,76 @@ def stitch_encounter_data(_data, locations_map, med_map):
                 labs_obs_clean_df['Timestamp'] = pd.to_datetime(labs_obs_clean_df['Timestamp'])
                 labs_obs_clean_df.drop(columns=['Vital Group'], inplace=True)
                 labs_obs_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
+                labs_obs_clean_df['Timestamp'] = labs_obs_clean_df['Timestamp'].apply(format_datetime)
 
 
             if not vitals_clean_df.empty:
                 vitals_clean_df.dropna(subset=['Value'], inplace=True)
                 vitals_clean_df['Timestamp'] = pd.to_datetime(vitals_clean_df['Timestamp'])
                 vitals_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
+                vitals_clean_df['Timestamp'] = vitals_clean_df['Timestamp'].apply(format_datetime)
 
             if not observations_clean_df.empty:
                 observations_clean_df.dropna(subset=['Value'], inplace=True)
                 observations_clean_df.rename(columns={'Vital': 'Observation', 'Vital Group': 'Observation Group'}, inplace=True)
                 observations_clean_df['Timestamp'] = pd.to_datetime(observations_clean_df['Timestamp'])
                 observations_clean_df.sort_values(by='Timestamp', inplace=True, ascending=True)
+
+                # Precompute adhoc changes and totals
+                # Replace JH-HLM
+                observations_clean_df['Observation'] = observations_clean_df['Observation'].astype(str).str.replace(
+                    'JH-HLM', 'Johns Hopkins Highest Level of Mobility', regex=False
+                )
+
+                # Braden Total Score within Skin - Assessment
+                try:
+                    braden_components = [
+                        'Braden Activity',
+                        'Braden Friction/Shear',
+                        'Braden Mobility',
+                        'Braden Moisture',
+                        'Braden Nutrition',
+                        'Braden Sensory Perception'
+                    ]
+                    mask_braden = observations_clean_df['Observation Group'] == 'Skin - Assessment'
+                    df_braden = observations_clean_df[mask_braden & observations_clean_df['Observation'].isin(braden_components)].copy()
+                    if not df_braden.empty:
+                        df_braden['__num'] = pd.to_numeric(df_braden['Value'], errors='coerce')
+                        braden_totals = df_braden.groupby('Timestamp')['__num'].sum(min_count=1).dropna()
+                        if not braden_totals.empty:
+                            add_rows = pd.DataFrame({
+                                'Observation': 'Braden Total Score',
+                                'Observation Group': 'Skin - Assessment',
+                                'Timestamp': braden_totals.index,
+                                'Value': braden_totals.values
+                            })
+                            observations_clean_df = pd.concat([observations_clean_df, add_rows], ignore_index=True)
+                except Exception as e:
+                    logger.warning(f"Braden total score precompute failed: {e}")
+
+                # GCS Total Score within Neurological
+                try:
+                    gcs_components = [
+                        'GCS - Eye Opening', 'GCS - Motor Response', 'GCS - Verbal Response'
+                    ]
+                    mask_gcs = observations_clean_df['Observation Group'] == 'Neurological'
+                    df_gcs = observations_clean_df[mask_gcs & observations_clean_df['Observation'].isin(gcs_components)].copy()
+                    if not df_gcs.empty:
+                        df_gcs['__num'] = pd.to_numeric(df_gcs['Value'], errors='coerce')
+                        gcs_totals = df_gcs.groupby('Timestamp')['__num'].sum(min_count=1).dropna()
+                        if not gcs_totals.empty:
+                            add_rows = pd.DataFrame({
+                                'Observation': 'GCS - Total Score',
+                                'Observation Group': 'Neurological',
+                                'Timestamp': gcs_totals.index,
+                                'Value': gcs_totals.values
+                            })
+                            observations_clean_df = pd.concat([observations_clean_df, add_rows], ignore_index=True)
+                except Exception as e:
+                    logger.warning(f"GCS total score precompute failed: {e}")
+
+                # Final format conversion for UI display
+                observations_clean_df['Timestamp'] = observations_clean_df['Timestamp'].apply(format_datetime)
 
         # --- Labs ---
         if 'encounter.reference' in labs_df.columns:
@@ -558,12 +1220,12 @@ def stitch_encounter_data(_data, locations_map, med_map):
                     if pd.notna(row['valueQuantity']):
                         val = format_value(row['valueQuantity']['value'])
                         if pd.notna(row['valueQuantity']['unit']):
-                            val += str(row['valueQuantity']['unit'])
+                            test_name += f" ({row['valueQuantity']['unit']})"
                 if 'valueQuantity.value' in row:
                     if pd.notna(row['valueQuantity.value']):
                         val = format_value(row['valueQuantity.value'])
                         if pd.notna(row['valueQuantity.unit']):
-                            val += str(row['valueQuantity.unit'])
+                            test_name += f" ({row['valueQuantity.unit']})"
 
                 low_ref = safe_get(
                     row,
@@ -590,6 +1252,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
 
             labs_clean_df.dropna(subset=['Timestamp'], inplace=True)
             labs_clean_df.sort_values(by=['Lab Test', 'Timestamp'], inplace=True, ascending=True)
+            labs_clean_df['Timestamp'] = labs_clean_df['Timestamp'].apply(format_datetime)
 
         # --- Documents ---
         if 'context.encounter' in docs_df.columns:
@@ -649,8 +1312,10 @@ def stitch_encounter_data(_data, locations_map, med_map):
             })
         if len(enc_procs) > 0:
             enc_procs_df = pd.DataFrame(enc_procs)
-            enc_procs_df['StartTime'] = pd.to_datetime(enc_procs_df['StartTime'], errors='coerce')
-            enc_procs_df['EndTime'] = pd.to_datetime(enc_procs_df['EndTime'], errors='coerce')
+            # enc_procs_df['StartTime'] = pd.to_datetime(enc_procs_df['StartTime'], errors='coerce')
+            # enc_procs_df['EndTime'] = pd.to_datetime(enc_procs_df['EndTime'], errors='coerce')
+            enc_procs_df['StartTime'] = enc_procs_df['StartTime'].apply(format_datetime)
+            enc_procs_df['EndTime'] = enc_procs_df['EndTime'].apply(format_datetime)
         else:
             enc_procs_df = pd.DataFrame()
 
@@ -686,13 +1351,19 @@ def stitch_encounter_data(_data, locations_map, med_map):
         if len(enc_micro) > 0:
             enc_micro_df = pd.DataFrame(enc_micro)
             enc_micro_df['Time'] = pd.to_datetime(enc_micro_df['Time'], errors='coerce')
+            enc_micro_df['Time'] = enc_micro_df['Time'].apply(format_datetime)
         else:
             enc_micro_df = pd.DataFrame()
         
         
+        # Precompute condition groups and lab categories for reuse in UI
+        conditions_grouped_df = prepare_grouped_conditions(enc_conditions_df)
+        lab_sorted_groups = prepare_lab_sorted_groups(labs_clean_df)
+
         stitched_data.append({
             **enc_row.to_dict(), 
             'conditions': enc_conditions_df, 
+            'conditions_grouped': conditions_grouped_df,
             'procedures': enc_procs_df, 
             'med_request': meds_req_df, 
             'med_disp': meds_disp_df, 
@@ -700,6 +1371,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
             'vitals': vitals_clean_df, 
             'observations': observations_clean_df,
             'labs': labs_clean_df, 
+            'lab_sorted_groups': lab_sorted_groups,
             'microorg': enc_micro_df,
             'diagnostic_reports': enc_diag_df,
             'reports': enc_docs_df,
@@ -746,7 +1418,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         if birth_date_str:
             try:
                 birth_date = datetime.strptime(str(birth_date_str).split('T')[0], '%Y-%m-%d')
-                birth_date_disp = birth_date.strftime('%Y-%m-%d')
+                birth_date_disp = format_datetime(birth_date, '%m-%d-%Y')
                 age = (datetime.now() - birth_date).days // 365
             except (ValueError, TypeError):
                 birth_date_disp = str(birth_date_str)
@@ -755,6 +1427,9 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         org_ref = p_info.get('managingOrganization.reference', '').replace('Organization/', '')
         org_name = org_map.get(org_ref, 'Unknown Org')
 
+        # Show fake display name for default patients if provided
+        if isinstance(generated_data, dict) and generated_data.get("display_name"):
+            st.write(f"Name: {generated_data['display_name']}")
         st.write(f"Patient ID: {patient_data.get('patient_id', 'N/A').split('/')[-1]}")
         st.write(f"Birth Date: {birth_date_disp}")
         st.write(f"Age: {age}")
@@ -770,12 +1445,12 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         with st.expander("AI Generated Patient Summary"):
             st.markdown(generated_data["summary"])
     
-    if generated_data["questions"] != "":
-        with st.expander("AI Generated Possible Patient Questions"):
-            st.markdown(generated_data["questions"])
+    # if generated_data["questions"] != "":
+    #     with st.expander("AI Generated Possible Patient Questions"):
+    #         st.markdown(generated_data["questions"])
 
     # --- Encounter Display ---
-    st.subheader("Admissions")
+    st.subheader("Hospital Encounters")
     if stitched_enc_df.empty:
         st.warning("No main hospital admission data available for this patient.")
         return
@@ -790,13 +1465,13 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
         if not enc_conditions_df.empty:
             first_condition = safe_get(enc_conditions_df.iloc[0]['code.coding'], [0, 'display'], 'N/A')
 
-        enc_class = str(safe_get(enc_row, ['class.display'], 'Admission')).title()
+        enc_class = str(enc_row['_type']).title()
 
         related_enc_ids = enc_row['related_encounter_ids']
         if pd.notna(start_time):
-            start_time = start_time.strftime('%Y-%m-%d %H:%M:%S')
+            start_time = format_datetime(start_time)
         if pd.notna(end_time):
-            end_time = end_time.strftime('%Y-%m-%d %H:%M:%S')
+            end_time = format_datetime(end_time)
         else:
             end_time = "Current"
             los = "Current"
@@ -818,8 +1493,15 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 for related_enc in related_enc_ids:
                     st.write(f"- {related_enc['id']} ({related_enc['location']}) : ({related_enc['start']} to {related_enc['end']})")
 
+            if "encounter_summaries" in generated_data:
+                if enc_row["id"] in generated_data["encounter_summaries"]:
+                    with st.expander("AI Generated Encounter Summary"):
+                        st.markdown(generated_data["encounter_summaries"][enc_row["id"]])
+                    st.markdown("---")
+
+            st.markdown("#### Further Information")
             # Location Gantt Chart
-            with st.expander("Location"):
+            with st.expander("Hospital Stay (Locations)"):
                 locations = enc_row.get('location')
                 if isinstance(locations, list):
                     loc_events = []
@@ -831,7 +1513,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                         end = pd.to_datetime(safe_get(loc, ['period', 'end']), errors='coerce')
                         los = (end - start).days
                         loc_events.append({
-                            'Task': loc_name,  # Plotly expects 'Task' for the y-axis label
+                            'Location': loc_name,
                             'Start': start,
                             'Finish': end,
                             'Resource': loc_name,
@@ -844,7 +1526,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                             loc_df, 
                             x_start="Start", 
                             x_end="Finish", 
-                            y="Task", 
+                            y="Location", 
                             color="Resource", 
                             custom_data="Length of Stay",
                             title=f"Patient Movement for Encounter {enc_row.get('id')}"
@@ -868,16 +1550,20 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
             # Nested Expanders
             with st.expander("Conditions"):
                 if not enc_conditions_df.empty:
-                    cond_list = [
-                        safe_get(row['code.coding'], [0, 'display'], 'N/A') 
-                        for _, row in enc_conditions_df.iterrows()
-                    ]
-                    code_list = [
-                        safe_get(row['code.coding'], [0, 'code'], 'N/A') 
-                        for _, row in enc_conditions_df.iterrows()
-                    ]
-                    cond_df = pd.DataFrame({'Condition': cond_list, 'Code': code_list})
-                    st.dataframe(cond_df, use_container_width=True, hide_index=True)
+                    # Prefer precomputed grouping from stitch_encounter_data
+                    cond_grouped = enc_row.get('conditions_grouped')
+                    if isinstance(cond_grouped, pd.DataFrame) and not cond_grouped.empty:
+                        cond_df = cond_grouped.copy()
+                    else:
+                        cond_df = prepare_grouped_conditions(enc_conditions_df)
+
+                    for group in sorted(cond_df['Group'].unique()):
+                        st.subheader(group.title())
+                        st.dataframe(
+                            cond_df[cond_df['Group'] == group].drop('Group', axis=1),
+                            use_container_width=True,
+                            hide_index=True
+                        )
                 else:
                     st.write("No condition data for this encounter.")
 
@@ -895,7 +1581,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 meds_admin_df = enc_row['med_admin']
                 
                 if not meds_req_df.empty:
-                    st.subheader("Medication Requests")
+                    st.subheader("Medication Orders")
                     st.dataframe(meds_req_df.dropna(subset=['Time']), use_container_width=True, hide_index=True)
                 
                 if not meds_disp_df.empty:
@@ -912,16 +1598,22 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
             with st.expander("Vitals"):
                 vitals_clean_df = enc_row['vitals']
                 vitals_clean_df.drop_duplicates(['Vital', 'Vital Group', 'Timestamp'], inplace=True)
-
                 
                 if not vitals_clean_df.empty:
-                    # for group in vitals_clean_df['Vital Group'].sort_values(ascending=True).unique():
-                    #     st.subheader(group)
-                    # vitals_clean_df_group = vitals_clean_df[vitals_clean_df['Vital Group'] == group]
+
                     vitals_clean_df.sort_values('Timestamp', ascending=True, inplace=True)
                     vitals_clean_df_pivot = vitals_clean_df.pivot(index='Vital', columns='Timestamp', values='Value')
                     vitals_clean_df_pivot.reset_index(inplace=True)
                     vitals_clean_df_pivot.fillna(value="", inplace=True)
+
+                    # sort DF by sort_similar_groups
+                    _names = sort_similar_groups(vitals_clean_df['Vital'].unique().tolist(), 0.35)
+                    vitals_clean_df_pivot.sort_values(
+                        'Vital', 
+                        key=lambda x: x.apply(lambda val: _names.index(val) if val in _names else len(_names)), 
+                        inplace=True
+                    )
+
                     st.dataframe(vitals_clean_df_pivot, use_container_width=True, hide_index=True)
                 else:
                     st.write("No vital signs data for this encounter.")
@@ -939,6 +1631,11 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                         obs_clean_df_group_pivot = obs_clean_df_group.pivot(index='Observation', columns='Timestamp', values='Value')
                         obs_clean_df_group_pivot.reset_index(inplace=True)
                         obs_clean_df_group_pivot.fillna(value="", inplace=True)
+
+                        # Note: JH-HLM replacement and total score calculations are precomputed
+                        # upstream in stitch_encounter_data for consistency and performance.
+                        # This UI now renders the precomputed results.
+                        obs_clean_df_group_pivot.sort_values('Observation', inplace=True)
                         st.dataframe(obs_clean_df_group_pivot, use_container_width=True, hide_index=True)
                 else:
                     st.write("No observation data for this encounter.")
@@ -949,8 +1646,25 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 if not labs_clean_df.empty:
                     labs_clean_df_pivot = labs_clean_df.pivot(index='Lab Test', columns='Timestamp', values='Value')
                     labs_clean_df_pivot.reset_index(inplace=True)
-                    labs_clean_df_pivot.fillna(value="", inplace=True)
-                    st.dataframe(labs_clean_df_pivot, use_container_width=True, hide_index=True)
+
+                    # Prefer precomputed lab categories from stitch_encounter_data
+                    pre_sorted = enc_row.get('lab_sorted_groups')
+                    if isinstance(pre_sorted, dict) and pre_sorted:
+                        for group, labs in pre_sorted.items():
+                            st.subheader(group.replace("_", " "))
+                            labs_group = labs_clean_df_pivot[labs_clean_df_pivot['Lab Test'].isin(labs)].dropna(axis=1, how='all')
+                            labs_group.fillna(value="", inplace=True)
+                            st.dataframe(labs_group, use_container_width=True, hide_index=True)
+                    else:
+                        # Fallback to previous inline sorting to preserve behavior
+                        sorter = GenericLabSorter()
+                        sorted_labs = sorter.sort_labs(labs_clean_df_pivot['Lab Test'].unique().tolist())
+                        for group, labs in sorted_labs.items():
+                            labs = [lab[0] for lab in labs]
+                            st.subheader(group.replace("_", " "))
+                            labs_group = labs_clean_df_pivot[labs_clean_df_pivot['Lab Test'].isin(labs)].dropna(axis=1, how='all')
+                            labs_group.fillna(value="", inplace=True)
+                            st.dataframe(labs_group, use_container_width=True, hide_index=True)
                 else:
                     st.write("No lab data for this encounter.")
 
@@ -968,7 +1682,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                     for _, row in enc_diag_df.iterrows():
                         doc_title = safe_get(row, ['presentedForm', 0, 'title'], "Document")
                         doc_date = row.get('effectiveDateTime', 'No Date')
-                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d %H:%M:%S')}**"):
+                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%m-%d-%Y %H:%M:%S')}**"):
                             try:
                                 b64_data = safe_get(row, ['presentedForm', 0, 'data'])
                                 if b64_data:
@@ -988,7 +1702,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                     for _, row in enc_docs_df.iterrows():
                         doc_title = safe_get(row, ['content', 0, 'attachment', 'title'], "Document")
                         doc_date = row.get('date', 'No Date')
-                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d %H:%M:%S')}**"):
+                        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%m-%d-%Y %H:%M:%S')}**"):
                             try:
                                 b64_data = safe_get(row, ['content', 0, 'attachment', 'data'])
                                 if b64_data:
@@ -1059,6 +1773,7 @@ def display_vitals_dashboard(stitched_enc_df: pd.DataFrame) -> None:
         default=default_vitals
     )
     # add time slider
+    vitals_df['Timestamp'] = pd.to_datetime(vitals_df['Timestamp'])
     time_slider = st.slider(
         "Time Slider", 
         min_value=vitals_df['Timestamp'].min().date(),
@@ -1163,6 +1878,7 @@ def display_labs_dashboard(stitched_enc_df: pd.DataFrame) -> None:
         default=default_labs
     )
     # add time slider
+    labs_df['Timestamp'] = pd.to_datetime(labs_df['Timestamp'])
     time_slider = st.slider(
         "Time Slider", 
         min_value=labs_df['Timestamp'].min().date(), 
@@ -1234,6 +1950,7 @@ def display_labs_dashboard(stitched_enc_df: pd.DataFrame) -> None:
     micro_df_list = [enc_row['microorg'] for _, enc_row in stitched_enc_df.iterrows()]
     if micro_df_list:
         microorg_df = pd.concat(micro_df_list)
+        microorg_df['Time'] = pd.to_datetime(microorg_df['Time'])
         microorg_df = microorg_df[
             microorg_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1]))
         ]
@@ -1274,6 +1991,8 @@ def display_medications(stitched_enc_df):
         default=all_meds
     )
     # add time slider
+    med_df['Time'] = pd.to_datetime(med_df['Time'])
+    
     time_slider = st.slider(
         "Time Slider", 
         min_value=med_df['Time'].min().date(), 
@@ -1283,7 +2002,8 @@ def display_medications(stitched_enc_df):
     )
 
     if not med_req_df.empty:
-        st.subheader("Medication Requests")
+        st.subheader("Medication Orders")
+        med_req_df['Time'] = pd.to_datetime(med_req_df['Time'])
         med_req_df = med_req_df[
             (med_req_df['Medication'].isin(selected_meds)) & 
             (med_req_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
@@ -1293,6 +2013,7 @@ def display_medications(stitched_enc_df):
     
     if not med_disp_df.empty:
         st.subheader("Medication Dispensed")
+        med_disp_df['Time'] = pd.to_datetime(med_disp_df['Time'])
         med_disp_df = med_disp_df[
             (med_disp_df['Medication'].isin(selected_meds)) & 
             (med_disp_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
@@ -1302,6 +2023,7 @@ def display_medications(stitched_enc_df):
     
     if not med_admin_df.empty:
         st.subheader("Medication Administrations")
+        med_admin_df['Time'] = pd.to_datetime(med_admin_df['Time'])
         med_admin_df = med_admin_df[
             (med_admin_df['Medication'].isin(selected_meds)) & 
             (med_admin_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1])))
@@ -1324,6 +2046,7 @@ def display_procedures(stitched_enc_df):
         return
     
     # add time slider
+    all_procedures_df['StartTime'] = pd.to_datetime(all_procedures_df['StartTime'])
     time_slider = st.slider(
         "Time Slider", 
         min_value=all_procedures_df['StartTime'].min().date(), 
@@ -1357,6 +2080,7 @@ def display_documents(stitched_enc_df):
     all_documents_df['date'] = pd.to_datetime(all_documents_df['date'])
 
     # add time slider
+    all_documents_df['date'] = pd.to_datetime(all_documents_df['date'])
     time_slider = st.slider(
         "Time Slider", 
         min_value=all_documents_df['date'].min().date(), 
@@ -1388,7 +2112,7 @@ def display_documents(stitched_enc_df):
             safe_get(row, ['presentedForm', 0, 'title'], "Document")
         )
         doc_date = row.get('date')
-        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%Y-%m-%d %H:%M:%S')}**"):
+        with st.expander(f"**{doc_title} - {format_datetime(doc_date, '%m-%d-%Y %H:%M:%S')}**"):
             try:
                 b64_data = safe_get(
                     row, ['content', 0, 'attachment', 'data'], 
@@ -1406,22 +2130,54 @@ def display_documents(stitched_enc_df):
 # --- Main Application Logic ---
 def main():
     """Main function to run the Streamlit app."""
-    # Load reference data
-    locations_df = load_ndjson_data("data/mimic_assets/MimicLocation.ndjson")
-    medications_df = load_ndjson_data("data/mimic_assets/MimicMedication.ndjson")
-    # specimens_df = load_ndjson_data("data/mimic_assets/MimicSpecimen.ndjson")
-    orgs_df = load_ndjson_data("data/mimic_assets/MimicOrganization.ndjson")
+    # Load reference data from assets
+    locations_df = load_ndjson_data("assets/reference_data/MimicLocation.ndjson")
+    medications_df = load_ndjson_data("assets/reference_data/MimicMedication.ndjson")
+    # specimens_df = load_ndjson_data("assets/reference_data/MimicSpecimen.ndjson")
+    orgs_df = load_ndjson_data("assets/reference_data/MimicOrganization.ndjson")
 
-    with open("data/mimic_assets/patient_summaries.json", "r") as f:
+    with open("assets/patient_summaries.json", "r") as f:
         patient_summaries = json.load(f)
 
     with st.sidebar:
         st.title("👨‍⚕️ MIMIC Patient Viewer")
-        uploaded_file = st.file_uploader("Choose a patient JSON file", type=['json'])
+        # Default patient selector
+        default_dir = "assets/mimic_default_patients"
+        default_patients = list_default_patients(default_dir)
+        default_labels = []
+        default_paths = []
+        for path, pid in default_patients:
+            default_paths.append(path)
+            display_id = pid[-8:]
+            default_labels.append(f"{pseudonymize_patient_id(pid)} — {display_id}")
+        selected_default_idx = 1
+        if default_labels:
+            # Default to the 2nd index (index=1) when available
+            default_index = 1 if len(default_labels) > 1 else 0
+            selected_default_idx = st.selectbox(
+                "Select a default patient",
+                options=list(range(len(default_labels))),
+                index=default_index,
+                format_func=lambda i: default_labels[i],
+            )
+
+        st.markdown("Or upload your own JSON file")
+        uploaded_file = st.file_uploader("Upload patient JSON", type=['json'])
+
+    selected_default_path = default_paths[selected_default_idx] if (default_labels and selected_default_idx is not None) else None
 
     if uploaded_file:
         patient_data = load_patient_data(uploaded_file)
-        
+        display_name = None
+    elif selected_default_path:
+        patient_data = load_patient_data_file(selected_default_path)
+        # derive patient_id from filename for pseudonym
+        try:
+            pid_from_name = selected_default_path.split('/')[-1].replace('patient_', '').replace('.json', '')
+            display_name = pseudonymize_patient_id(pid_from_name)
+        except Exception:
+            display_name = None
+    
         if patient_data:
             st.title("Patient Dashboard")
             
@@ -1439,30 +2195,33 @@ def main():
 
             stitched_encounters_df = stitch_encounter_data(patient_data, locations_map, med_map)
             
-            tab_titles = ["📄 Overview", "❤️ Vitals", "🧪 Labs", "💊 Medications", "💉 Procedures", "📝 Documents"]
-            overview, vitals, labs, medications, procedures, documents = st.tabs(tab_titles)
+            # tab_titles = ["📄 Overview", "❤️ Vitals", "🧪 Labs", "💊 Medications", "💉 Procedures", "📝 Documents"]
+            # overview, vitals, labs, medications, procedures, documents = st.tabs(tab_titles)
 
             patient_id = patient_data["patient_id"].replace("Patient/", "")
             generated_data = {
                 "summary": "",
-                "questions": ""
+                "questions": "",
+                "encounter_summaries": {}
             }
             if patient_id in patient_summaries:
                 generated_data = patient_summaries[patient_id]
+            # Attach a display name if this is a default patient selection
+            if display_name:
+                generated_data["display_name"] = display_name
 
-            
-            with overview:
-                display_patient_overview(patient_data, stitched_encounters_df, locations_map, orgs_df, generated_data)
-            with vitals:
-                display_vitals_dashboard(stitched_encounters_df)
-            with labs:
-                display_labs_dashboard(stitched_encounters_df)
-            with medications:
-                display_medications(stitched_encounters_df)
-            with procedures:
-                display_procedures(stitched_encounters_df)
-            with documents:
-                display_documents(stitched_encounters_df)
+            # with overview:
+            display_patient_overview(patient_data, stitched_encounters_df, locations_map, orgs_df, generated_data)
+            # with vitals:
+            #     display_vitals_dashboard(stitched_encounters_df)
+            # with labs:
+            #     display_labs_dashboard(stitched_encounters_df)
+            # with medications:
+            #     display_medications(stitched_encounters_df)
+            # with procedures:
+            #     display_procedures(stitched_encounters_df)
+            # with documents:
+            #     display_documents(stitched_encounters_df)
     else:
         display_welcome_screen()
 
