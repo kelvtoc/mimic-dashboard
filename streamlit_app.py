@@ -2153,7 +2153,7 @@ def main():
         selected_default_idx = 1
         if default_labels:
             # Default to the 2nd index (index=1) when available
-            default_index = 1 if len(default_labels) > 1 else 0
+            default_index = 0
             selected_default_idx = st.selectbox(
                 "Select a default patient",
                 options=list(range(len(default_labels))),
