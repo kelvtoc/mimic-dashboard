@@ -2178,50 +2178,50 @@ def main():
         except Exception:
             display_name = None
     
-        if patient_data:
-            st.title("Patient Dashboard")
-            
-            # --- Prepare data maps and stitch encounters ---
-            locations_map = pd.Series(locations_df.name.values, index=locations_df.id).to_dict()
-            
-            def get_med_name(identifiers):
-                if isinstance(identifiers, list):
-                    for ident in identifiers:
-                        if isinstance(ident, dict) and 'system' in ident and 'mimic-medication-name' in ident['system']:
-                            return ident.get('value', 'Unknown Med')
-                return 'Unknown Med'
-            medications_df['display_name'] = medications_df['identifier'].apply(get_med_name)
-            med_map = pd.Series(medications_df.display_name.values, index=medications_df.id).to_dict()
+    if patient_data:
+        st.title("Patient Dashboard")
+        
+        # --- Prepare data maps and stitch encounters ---
+        locations_map = pd.Series(locations_df.name.values, index=locations_df.id).to_dict()
+        
+        def get_med_name(identifiers):
+            if isinstance(identifiers, list):
+                for ident in identifiers:
+                    if isinstance(ident, dict) and 'system' in ident and 'mimic-medication-name' in ident['system']:
+                        return ident.get('value', 'Unknown Med')
+            return 'Unknown Med'
+        medications_df['display_name'] = medications_df['identifier'].apply(get_med_name)
+        med_map = pd.Series(medications_df.display_name.values, index=medications_df.id).to_dict()
 
-            stitched_encounters_df = stitch_encounter_data(patient_data, locations_map, med_map)
-            
-            # tab_titles = ["📄 Overview", "❤️ Vitals", "🧪 Labs", "💊 Medications", "💉 Procedures", "📝 Documents"]
-            # overview, vitals, labs, medications, procedures, documents = st.tabs(tab_titles)
+        stitched_encounters_df = stitch_encounter_data(patient_data, locations_map, med_map)
+        
+        # tab_titles = ["📄 Overview", "❤️ Vitals", "🧪 Labs", "💊 Medications", "💉 Procedures", "📝 Documents"]
+        # overview, vitals, labs, medications, procedures, documents = st.tabs(tab_titles)
 
-            patient_id = patient_data["patient_id"].replace("Patient/", "")
-            generated_data = {
-                "summary": "",
-                "questions": "",
-                "encounter_summaries": {}
-            }
-            if patient_id in patient_summaries:
-                generated_data = patient_summaries[patient_id]
-            # Attach a display name if this is a default patient selection
-            if display_name:
-                generated_data["display_name"] = display_name
+        patient_id = patient_data["patient_id"].replace("Patient/", "")
+        generated_data = {
+            "summary": "",
+            "questions": "",
+            "encounter_summaries": {}
+        }
+        if patient_id in patient_summaries:
+            generated_data = patient_summaries[patient_id]
+        # Attach a display name if this is a default patient selection
+        if display_name:
+            generated_data["display_name"] = display_name
 
-            # with overview:
-            display_patient_overview(patient_data, stitched_encounters_df, locations_map, orgs_df, generated_data)
-            # with vitals:
-            #     display_vitals_dashboard(stitched_encounters_df)
-            # with labs:
-            #     display_labs_dashboard(stitched_encounters_df)
-            # with medications:
-            #     display_medications(stitched_encounters_df)
-            # with procedures:
-            #     display_procedures(stitched_encounters_df)
-            # with documents:
-            #     display_documents(stitched_encounters_df)
+        # with overview:
+        display_patient_overview(patient_data, stitched_encounters_df, locations_map, orgs_df, generated_data)
+        # with vitals:
+        #     display_vitals_dashboard(stitched_encounters_df)
+        # with labs:
+        #     display_labs_dashboard(stitched_encounters_df)
+        # with medications:
+        #     display_medications(stitched_encounters_df)
+        # with procedures:
+        #     display_procedures(stitched_encounters_df)
+        # with documents:
+        #     display_documents(stitched_encounters_df)
     else:
         display_welcome_screen()
 
