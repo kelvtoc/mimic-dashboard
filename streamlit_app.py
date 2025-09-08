@@ -352,274 +352,148 @@ def get_condition_group_with_confidence(condition: str, icd_code: Optional[str] 
     # Low confidence for defaults
     return classification, 0.3
 
-# --- Vital sorting
+# --- Vital and Lab grouping (optimized)
 
-def get_medical_priority(name: str) -> int:
-    """
-    Assign priority scores for medical ordering preferences.
-    Lower scores appear first.
-    """
-    name_lower = name.lower()
-    
-    # Blood pressure ordering: systolic -> mean -> diastolic
-    if 'systolic' in name_lower:
-        return 1
-    elif 'diastolic' in name_lower:
-        return 2
-    elif 'mean' in name_lower and 'pressure' in name_lower:
-        return 3
-    
-    # Heart rate variations
-    elif 'heart rate' in name_lower and 'bpm' in name_lower:
-        return 1  # Prefer bpm notation
-    elif 'heart rate' in name_lower:
-        return 2
-    
-    # Temperature ordering: general -> specific
-    elif name_lower == 'body temperature':
-        return 1
-    elif 'temperature' in name_lower and '(f)' in name_lower:
-        return 2
-    elif 'temperature fahrenheit' in name_lower:
-        return 3
-    elif 'temperature site' in name_lower:
-        return 4
-    
-    return 0  # Default priority
+# Global, immutable categories for Lab sorting (tuples for faster iteration)
+LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
+    'Chemistry_Basic': {
+        'keywords': (
+            'glucose', 'sodium', 'potassium', 'chloride', 'bicarbonate', 'co2',
+            'bun', 'urea', 'creatinine', 'anion gap', 'osmolality'
+        ),
+        'priority': 1
+    },
+    'Chemistry_Extended': {
+        'keywords': (
+            'albumin', 'protein', 'calcium', 'phosph', 'magnesium', 'iron',
+            'b12', 'folate', 'tsh', 'vitamin'
+        ),
+        'priority': 2
+    },
+    'Liver_Related': {
+        'keywords': (
+            'alt', 'alanine', 'ast', 'aspartate', 'alkaline', 'phosphatase',
+            'bilirubin', 'bili', 'hepatic', 'liver'
+        ),
+        'priority': 3
+    },
+    'Cardiac_Related': {
+        'keywords': (
+            'troponin', 'ck', 'creatine kinase', 'bnp', 'natiuretic', 'cardiac',
+            'heart', 'ck-mb', 'ldh', 'lactate dehydrogenase'
+        ),
+        'priority': 4
+    },
+    'Hematology_Complete': {
+        'keywords': (
+            'wbc', 'white blood', 'rbc', 'red blood', 'hemoglobin', 'hematocrit',
+            'platelet', 'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte'
+        ),
+        'priority': 5
+    },
+    'Hematology_Differential': {
+        'keywords': (
+            'neutrophil', 'lymphocyte', 'monocyte', 'eosinophil', 'basophil',
+            'absolute', 'differential', 'basos', 'eos', 'lymphs', 'monos', 'neuts'
+        ),
+        'priority': 6
+    },
+    'Blood_Gas': {
+        'keywords': (
+            'ph', 'pco2', 'po2', 'co2 pressure', 'o2 pressure', 'o2 saturation',
+            'oxygen', 'base excess', 'arterial', 'venous', 'lactate', 'lactic'
+        ),
+        'priority': 7
+    },
+    'Coagulation': {
+        'keywords': (
+            'pt', 'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
+            'coagulation', 'clotting'
+        ),
+        'priority': 8
+    },
+    'Hormones_Endocrine': {
+        'keywords': (
+            'hormone', 'parathyroid', 'pth', 'thyroid', 'tsh', 't4', 't3',
+            'cortisol', 'insulin', 'hba1c', 'hemoglobin a1c'
+        ),
+        'priority': 9
+    },
+    'Inflammatory_Immune': {
+        'keywords': (
+            'crp', 'esr', 'sed rate', 'complement', 'immunoglobulin', 'rheumatoid',
+            'ana', 'antinuclear'
+        ),
+        'priority': 10
+    },
+    'Enzymes_Other': {
+        'keywords': (
+            'lipase', 'amylase', 'aldolase', 'enzyme', 'kinase', 'transferase',
+            'dehydrogenase', 'haptoglobin'
+        ),
+        'priority': 11
+    },
+    'Urine_Analysis': {
+        'keywords': (
+            'urine', 'urinalysis', 'specific gravity', 'ketone', 'nitrite',
+            'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen'
+        ),
+        'priority': 12
+    },
+    'Drugs_Toxicology': {
+        'keywords': (
+            'vancomycin', 'digoxin', 'lithium', 'drug', 'toxic', 'level',
+            'therapeutic', 'peak', 'trough'
+        ),
+        'priority': 13
+    },
+    'Specimen_Info': {
+        'keywords': (
+            'hold', 'tube', 'collection', 'specimen', 'temperature', 'appearance',
+            'color', 'mucous', 'edta', 'green top'
+        ),
+        'priority': 14
+    },
+}
 
-def levenshtein_distance(s1: str, s2: str) -> int:
-    """Calculate the Levenshtein distance between two strings."""
-    if len(s1) < len(s2):
-        return levenshtein_distance(s2, s1)
+@st.cache_data
+def _clean_lab_name_cached(lab_name: str) -> str:
+    cleaned = lab_name.lower().strip()
+    cleaned = re.sub(r'\s*\([^)]*\)', '', cleaned)
+    cleaned = re.sub(r'\s*#/\w+', '', cleaned)
+    cleaned = re.sub(r'^(calculated|arterial|venous|total|free|ionized)\s+', '', cleaned)
+    cleaned = re.sub(r'\s+(serum|plasma|whole blood|urine|dipstick|units)$', '', cleaned)
+    return cleaned.strip()
 
-    if len(s2) == 0:
-        return len(s1)
-
-    previous_row = list(range(len(s2) + 1))
-    for i, c1 in enumerate(s1):
-        current_row = [i + 1]
-        for j, c2 in enumerate(s2):
-            insertions = previous_row[j + 1] + 1
-            deletions = current_row[j] + 1
-            substitutions = previous_row[j] + (c1 != c2)
-            current_row.append(min(insertions, deletions, substitutions))
-        previous_row = current_row
-    
-    return previous_row[-1]
-
-def normalized_distance(s1: str, s2: str) -> float:
-    """Calculate normalized edit distance (0-1 scale)."""
-    max_len = max(len(s1), len(s2))
-    if max_len == 0:
-        return 0
-    return levenshtein_distance(s1, s2) / max_len
-
-def preprocess_column_name(name: str) -> str:
-    """Clean column name for better matching."""
-    # Convert to lowercase
-    cleaned = name.lower()
-    # Remove extra spaces and normalize
-    cleaned = re.sub(r'\s+', ' ', cleaned.strip())
-    # Optional: remove some punctuation but keep important ones
-    cleaned = re.sub(r'[^\w\s\(\)\[\]%°-]', '', cleaned)
-    return cleaned
-
-def calculate_group_similarity_score(group: List[str], processed_names_dict: Mapping[str, str]) -> float:
-    """
-    Calculate the average similarity within a group.
-    Lower scores indicate more similar items.
-    """
-    if len(group) <= 1:
-        return 0  # Single items have perfect similarity
-    
-    total_distance = 0
-    pair_count = 0
-    
-    for i in range(len(group)):
-        for j in range(i + 1, len(group)):
-            name1 = processed_names_dict[group[i]]
-            name2 = processed_names_dict[group[j]]
-            total_distance += normalized_distance(name1, name2)
-            pair_count += 1
-    
-    return total_distance / pair_count if pair_count > 0 else 0
-
-def find_similar_groups(column_names: List[str], similarity_threshold: float = 0.3) -> List[List[str]]:
-    """
-    Group similar column names using edit distance.
-    
-    Args:
-        column_names: List of column names
-        similarity_threshold: Maximum normalized distance to consider similar (0-1)
-    
-    Returns:
-        List of groups, where each group is a list of similar column names
-    """
-    # Preprocess names for better matching
-    processed_names = [preprocess_column_name(name) for name in column_names]
-    processed_names_dict: Dict[str, str] = {name: processed for name, processed in zip(column_names, processed_names)}
-    name_to_index: Dict[str, int] = {name: i for i, name in enumerate(column_names)}
-    
-    # Create similarity matrix
-    n = len(column_names)
-    similarity_matrix = np.zeros((n, n))
-    
-    for i in range(n):
-        for j in range(i+1, n):
-            dist = normalized_distance(processed_names[i], processed_names[j])
-            similarity_matrix[i][j] = dist
-            similarity_matrix[j][i] = dist
-    
-    # Group similar items
-    visited = set()
-    groups = []
-    
-    for i in range(n):
-        if i in visited:
-            continue
-            
-        # Start a new group with current item
-        current_group = [column_names[i]]
-        visited.add(i)
-        
-        # Find all items similar to current item
-        for j in range(i+1, n):
-            if j not in visited and similarity_matrix[i][j] <= similarity_threshold:
-                current_group.append(column_names[j])
-                visited.add(j)
-        
-        # Also check if any remaining items are similar to items already in group
-        group_changed = True
-        while group_changed:
-            group_changed = False
-            group_indices = [name_to_index[name] for name in current_group]
-            
-            for k in range(n):
-                if k in visited:
+@st.cache_data
+def _find_best_lab_category_cached(cleaned_name: str, threshold: float = 0.3) -> Tuple[str, float]:
+    best_cat = 'Uncategorized'
+    best_score = 0.0
+    for cat, info in LAB_SORTING_CATEGORIES.items():
+        kws = info['keywords']
+        matches = sum(1 for kw in kws if kw in cleaned_name)
+        if matches:
+            score = 0.9 + 0.1 * matches
+        else:
+            score = 0.0
+            for kw in kws:
+                if len(kw) >= 4 and (kw[:4] in cleaned_name or kw[-4:] in cleaned_name):
+                    score = max(score, 0.6)
                     continue
-                
-                # Check if item k is similar to any item in current group
-                min_dist_to_group = min(similarity_matrix[k][idx] for idx in group_indices)
-                if min_dist_to_group <= similarity_threshold:
-                    current_group.append(column_names[k])
-                    visited.add(k)
-                    group_changed = True
-
-        # Sort items within each group by medical priority
-        current_group.sort(key=lambda x: get_medical_priority(x))
-        groups.append(current_group)
-    
-    # Sort groups by their internal similarity (most similar groups first)
-    groups.sort(key=lambda group: calculate_group_similarity_score(group, processed_names_dict))
-    
-    return groups
-
-def sort_similar_groups(column_names: List[str], similarity_threshold: float = 0.3) -> List[str]:
-    """
-    Sort column names by grouping similar ones together and sorting groups by similarity.
-    
-    Args:
-        column_names: List of column names to sort
-        similarity_threshold: Maximum normalized distance to consider similar (0-1)
-    
-    Returns:
-        Flat list of column names sorted by groups and similarity
-    """
-    groups = find_similar_groups(column_names, similarity_threshold)
-    return [item for sublist in groups for item in sublist]
+                sim = SequenceMatcher(None, kw, cleaned_name).ratio()
+                if sim > threshold:
+                    score = max(score, sim * 0.7)
+        if score > best_score:
+            best_cat, best_score = cat, score
+    return best_cat, best_score
 
 # --- Lab Sorting
 
 class GenericLabSorter:
-    """Utility to categorize and sort lab names into clinically relevant groups."""
+    """Utility to categorize and sort lab names into clinically relevant groups (cached)."""
 
     def __init__(self) -> None:
-        # Define sorting categories with flexible matching keywords
-        self.sorting_categories = {
-            'Chemistry_Basic': {
-                'keywords': ['glucose', 'sodium', 'potassium', 'chloride', 'bicarbonate', 'co2', 
-                           'bun', 'urea', 'creatinine', 'anion gap', 'osmolality'],
-                'priority': 1
-            },
-            
-            'Chemistry_Extended': {
-                'keywords': ['albumin', 'protein', 'calcium', 'phosph', 'magnesium', 'iron',
-                           'b12', 'folate', 'tsh', 'vitamin'],
-                'priority': 2
-            },
-            
-            'Liver_Related': {
-                'keywords': ['alt', 'alanine', 'ast', 'aspartate', 'alkaline', 'phosphatase',
-                           'bilirubin', 'bili', 'hepatic', 'liver'],
-                'priority': 3
-            },
-            
-            'Cardiac_Related': {
-                'keywords': ['troponin', 'ck', 'creatine kinase', 'bnp', 'natiuretic', 'cardiac',
-                           'heart', 'ck-mb', 'ldh', 'lactate dehydrogenase'],
-                'priority': 4
-            },
-            
-            'Hematology_Complete': {
-                'keywords': ['wbc', 'white blood', 'rbc', 'red blood', 'hemoglobin', 'hematocrit',
-                           'platelet', 'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte'],
-                'priority': 5
-            },
-            
-            'Hematology_Differential': {
-                'keywords': ['neutrophil', 'lymphocyte', 'monocyte', 'eosinophil', 'basophil',
-                           'absolute', 'differential', 'basos', 'eos', 'lymphs', 'monos', 'neuts'],
-                'priority': 6
-            },
-            
-            'Blood_Gas': {
-                'keywords': ['ph', 'pco2', 'po2', 'co2 pressure', 'o2 pressure', 'o2 saturation',
-                           'oxygen', 'base excess', 'arterial', 'venous', 'lactate', 'lactic'],
-                'priority': 7
-            },
-            
-            'Coagulation': {
-                'keywords': ['pt', 'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
-                           'coagulation', 'clotting'],
-                'priority': 8
-            },
-            
-            'Hormones_Endocrine': {
-                'keywords': ['hormone', 'parathyroid', 'pth', 'thyroid', 'tsh', 't4', 't3',
-                           'cortisol', 'insulin', 'hba1c', 'hemoglobin a1c'],
-                'priority': 9
-            },
-            
-            'Inflammatory_Immune': {
-                'keywords': ['crp', 'esr', 'sed rate', 'complement', 'immunoglobulin', 'rheumatoid',
-                           'ana', 'antinuclear'],
-                'priority': 10
-            },
-            
-            'Enzymes_Other': {
-                'keywords': ['lipase', 'amylase', 'aldolase', 'enzyme', 'kinase', 'transferase',
-                           'dehydrogenase', 'haptoglobin'],
-                'priority': 11
-            },
-            
-            'Urine_Analysis': {
-                'keywords': ['urine', 'urinalysis', 'specific gravity', 'ketone', 'nitrite',
-                           'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen'],
-                'priority': 12
-            },
-            
-            'Drugs_Toxicology': {
-                'keywords': ['vancomycin', 'digoxin', 'lithium', 'drug', 'toxic', 'level',
-                           'therapeutic', 'peak', 'trough'],
-                'priority': 13
-            },
-            
-            'Specimen_Info': {
-                'keywords': ['hold', 'tube', 'collection', 'specimen', 'temperature', 'appearance',
-                           'color', 'mucous', 'edta', 'green top'],
-                'priority': 14
-            }
-        }
+        self.sorting_categories = LAB_SORTING_CATEGORIES
 
     def clean_lab_name(self, lab_name: str) -> str:
         """Clean lab name for better matching"""
@@ -640,33 +514,8 @@ class GenericLabSorter:
 
     def find_best_category(self, lab_name: str, threshold: float = 0.3) -> Tuple[str, float]:
         """Find the best matching category for a lab name"""
-        cleaned_name = self.clean_lab_name(lab_name)
-        best_category = 'Uncategorized'
-        best_score = 0.0
-        
-        for category, info in self.sorting_categories.items():
-            category_score = 0.0
-            
-            # Check for keyword matches (exact substring match gets high score)
-            for keyword in info['keywords']:
-                if keyword in cleaned_name:
-                    category_score = max(category_score, 0.9)
-                else:
-                    # Check for partial matches using similarity
-                    similarity = self.calculate_similarity(keyword, cleaned_name)
-                    if similarity > threshold:
-                        category_score = max(category_score, similarity * 0.7)
-            
-            # Bonus for multiple keyword matches
-            keyword_matches = sum(1 for keyword in info['keywords'] if keyword in cleaned_name)
-            if keyword_matches > 1:
-                category_score += 0.1 * keyword_matches
-            
-            if category_score > best_score:
-                best_score = category_score
-                best_category = category
-        
-        return best_category, best_score
+        cleaned_name = _clean_lab_name_cached(lab_name)
+        return _find_best_lab_category_cached(cleaned_name, threshold)
 
     def sort_labs(self, lab_list: List[str], similarity_threshold: float = 0.3) -> Dict[str, List[Tuple[str, float]]]:
         """Sort labs into categories with confidence scores"""
@@ -708,37 +557,151 @@ class GenericLabSorter:
         
         return result
 
-    def find_similar_labs(self, lab_list: List[str], similarity_threshold: float = 0.7) -> Dict[str, List[str]]:
-        """Find groups of similar lab names (useful for identifying duplicates or variants)"""
-        similar_groups = {}
-        processed = set()
-        
-        for i, lab1 in enumerate(lab_list):
-            if lab1 in processed:
-                continue
-                
-            similar_labs = [lab1]
-            processed.add(lab1)
-            
-            for j, lab2 in enumerate(lab_list[i+1:], i+1):
-                if lab2 in processed:
-                    continue
-                    
-                similarity = self.calculate_similarity(
-                    self.clean_lab_name(lab1), 
-                    self.clean_lab_name(lab2)
-                )
-                
-                if similarity >= similarity_threshold:
-                    similar_labs.append(lab2)
-                    processed.add(lab2)
-            
-            if len(similar_labs) > 1:
-                # Use the shortest name as the group key
-                group_key = min(similar_labs, key=len)
-                similar_groups[group_key] = similar_labs
-        
-        return similar_groups
+
+class VitalsGrouper:
+    """Group vital names into categories with BP-specific ordering."""
+
+    def __init__(self) -> None:
+        self.categories: Dict[str, Dict[str, Any]] = {
+            "Blood Pressure": {
+                "keywords": (
+                    "systolic", "diastolic", "map", "mean arterial", "blood pressure", "bp", "nbp", "abp",
+                    "arterial line", "invasive blood pressure", "non-invasive blood pressure"
+                ),
+                "priority": 1,
+            },
+            "Heart/Respiratory Rate": {
+                "keywords": (
+                    # Heart
+                    "heart rate", "hr", "pulse", "ventricular rate", "atrial rate", "bpm",
+                    # Respiratory
+                    "respiratory rate", "rr", "breaths", "vent rate", "resp rate",
+                ),
+                "priority": 2,
+            },
+            "Temperature": {
+                "keywords": (
+                    "temperature", "temp", "tympanic", "oral", "rectal", "axillary", "core", "esophageal",
+                    "bladder", "°c", "(c)", "°f", "(f)"
+                ),
+                "priority": 4,
+            },
+            "Oxygenation": {
+                "keywords": ("spo2", "oxygen saturation", "o2 sat", "pulse ox", "sat", "sao2"),
+                "priority": 5,
+            },
+            "Capnography": {
+                "keywords": ("etco2", "end tidal", "capnograph", "petco2"),
+                "priority": 6,
+            },
+            "Oxygen Therapy/Delivery": {
+                "keywords": (
+                    "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nc", "nonrebreather", "nrb",
+                    "venturi", "trach collar"
+                ),
+                "priority": 7,
+            },
+            "Ventilation/Device Settings": {
+                "keywords": (
+                    "ventilator", "mode", "peep", "pip", "ps", "pressure support", "tidal volume", "vt",
+                    "minute ventilation", "mv", "insp time", "i:e ratio", "rate (vent)"
+                ),
+                "priority": 8,
+            },
+            "Hemodynamics (Advanced)": {
+                "keywords": ("cvp", "co", "cardiac output", "ci", "cardiac index", "sv", "svr", "pvr", "svv", "ppv"),
+                "priority": 9,
+            },
+            "ECG/Rhythm & Intervals": {
+                "keywords": (
+                    "rhythm", "telemetry", "qtc", "qt ", "pr interval", "qrs", "st segment", "ectopy", "afib",
+                    "atrial fibrillation"
+                ),
+                "priority": 10,
+            },
+            "Neurologic": {
+                "keywords": ("gcs", "glasgow", "pupil", "pupill", "rass", "richmond", "cam-icu", "sedation", "avpu"),
+                "priority": 11,
+            },
+            "Pain": {
+                "keywords": ("pain", "pain score", "nrs", "vas", "cpot"),
+                "priority": 12,
+            },
+            "Anthropometrics": {
+                "keywords": ("height", "weight", "bmi", "body mass", "head circumference", "mid-arm circumference"),
+                "priority": 13,
+            },
+            "Point-of-Care Glucose": {
+                "keywords": ("poc glucose", "fingerstick", "accu", "accucheck", "fs glucose", "bedside glucose"),
+                "priority": 14,
+            },
+            "Fluid Balance (I&O)": {
+                "keywords": ("intake", "output", "urine output", "uop", "urinary", "drain", "chest tube", "ng output", "emesis", "stool"),
+                "priority": 15,
+            },
+        }
+
+    def category_priority(self, category: str) -> int:
+        return self.categories.get(category, {}).get('priority', 999)
+
+    def classify(self, name: str) -> str:
+        return _classify_vital_cached(name.lower().strip())
+
+    def order_names_within_category(self, category: str, names: List[str]) -> List[str]:
+        if category == 'Blood Pressure':
+            def bp_key(x: str) -> tuple:
+                xl = x.lower()
+                if 'systolic' in xl:
+                    p = 0
+                elif 'diastolic' in xl:
+                    p = 1
+                elif ('map' in xl) or ('mean arterial' in xl):
+                    p = 2
+                else:
+                    p = 3
+                return (p, xl)
+            return sorted(names, key=bp_key)
+        return sorted(names, key=lambda s: s.lower())
+
+
+@st.cache_data
+def _classify_vital_cached(n: str) -> str:
+    if any(k in n for k in ('systolic', 'diastolic', 'mean arterial', 'map')) or (
+        ('bp' in n) or ('blood pressure' in n) or ('abp' in n) or ('nbp' in n)
+    ):
+        return 'Blood Pressure'
+    if any(k in n for k in ('spo2', 'sao2', 'oxygen saturation', 'pulse ox', 'o2 sat', 'sat')):
+        return 'Oxygenation'
+    if any(k in n for k in ('fio2', 'oxygen flow', 'o2 flow', 'nasal cannula', 'nc', 'nonrebreather', 'nrb', 'venturi', 'trach collar', 'l/min')):
+        return 'Oxygen Therapy/Delivery'
+    if any(k in n for k in ('etco2', 'end tidal', 'capnograph', 'petco2')):
+        return 'Capnography'
+    if any(k in n for k in (
+        'respiratory rate', 'rr', 'resp rate', 'breaths', 'vent rate',
+        'heart rate', 'hr', 'pulse', 'ventricular rate', 'atrial rate', 'bpm'
+    )):
+        return 'Heart/Respiratory Rate'
+    if any(k in n for k in ('temperature', 'temp', 'tympanic', 'oral', 'rectal', 'axillary', 'core', 'esophageal', 'bladder', '°c', '(c)', '°f', '(f)')):
+        return 'Temperature'
+    if any(k in n for k in ('ventilator', 'mode', 'peep', 'pip', 'ps', 'pressure support', 'tidal volume', 'vt', 'minute ventilation', 'mv', 'insp time', 'i:e ratio', 'rate (vent)')):
+        return 'Ventilation/Device Settings'
+    if any(k in n for k in ('cvp', 'cardiac output', 'co', 'ci', 'cardiac index', 'sv', 'svr', 'pvr', 'svv', 'ppv')):
+        return 'Hemodynamics (Advanced)'
+    if any(k in n for k in ('rhythm', 'telemetry', 'qtc', 'qt ', 'pr interval', 'qrs', 'st segment', 'ectopy', 'afib', 'atrial fibrillation')):
+        return 'ECG/Rhythm & Intervals'
+    if any(k in n for k in ('gcs', 'glasgow', 'pupil', 'pupill', 'rass', 'richmond', 'cam-icu', 'sedation', 'avpu')):
+        return 'Neurologic'
+    if any(k in n for k in ('pain', 'pain score', 'nrs', 'vas', 'cpot')):
+        return 'Pain'
+    if any(k in n for k in ('height', 'weight', 'bmi', 'body mass', 'head circumference', 'mid-arm circumference')):
+        return 'Anthropometrics'
+    if any(k in n for k in ('intake', 'output', 'urine output', 'uop', 'urinary', 'drain', 'chest tube', 'ng output', 'emesis', 'stool')):
+        return 'Fluid Balance (I&O)'
+    if any(k in n for k in ('poc glucose', 'fingerstick', 'accu', 'accucheck', 'fs glucose', 'bedside glucose')):
+        return 'Point-of-Care Glucose'
+    return 'Other'
+
+    # Optional: similar labs detection retained if needed elsewhere
 
 # --- Data Stitching Logic ---
 # @st.cache_data
@@ -1600,21 +1563,35 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 vitals_clean_df.drop_duplicates(['Vital', 'Vital Group', 'Timestamp'], inplace=True)
                 
                 if not vitals_clean_df.empty:
-
+                    # Group vitals into clinically-meaningful categories and display per group
+                    vg = VitalsGrouper()
+                    # Prepare base pivoted data for easy slicing by Vital name
                     vitals_clean_df.sort_values('Timestamp', ascending=True, inplace=True)
-                    vitals_clean_df_pivot = vitals_clean_df.pivot(index='Vital', columns='Timestamp', values='Value')
-                    vitals_clean_df_pivot.reset_index(inplace=True)
-                    vitals_clean_df_pivot.fillna(value="", inplace=True)
+                    vit_pivot = vitals_clean_df.pivot(index='Vital', columns='Timestamp', values='Value')
+                    vit_pivot.reset_index(inplace=True)
 
-                    # sort DF by sort_similar_groups
-                    _names = sort_similar_groups(vitals_clean_df['Vital'].unique().tolist(), 0.35)
-                    vitals_clean_df_pivot.sort_values(
-                        'Vital', 
-                        key=lambda x: x.apply(lambda val: _names.index(val) if val in _names else len(_names)), 
-                        inplace=True
-                    )
+                    # Pre-index pivot rows by vital name for fast selection
+                    name_to_row = {row['Vital']: row for _, row in vit_pivot.iterrows()}
 
-                    st.dataframe(vitals_clean_df_pivot, use_container_width=True, hide_index=True)
+                    # Build grouped lists using unique Vital names
+                    unique_vital_names = sorted(vitals_clean_df['Vital'].unique().tolist())
+                    # Bucket by category
+                    buckets: Dict[str, List[str]] = {}
+                    for name in unique_vital_names:
+                        cat = vg.classify(name)
+                        buckets.setdefault(cat, []).append(name)
+
+                    # Render groups by priority
+                    for category in sorted(buckets.keys(), key=vg.category_priority):
+                        ordered_names = vg.order_names_within_category(category, buckets[category])
+                        if not ordered_names:
+                            continue
+                        st.subheader(category)
+                        # Reconstruct a sub-table for just these vitals in the requested order
+                        sub_df = pd.DataFrame([name_to_row[n] for n in ordered_names if n in name_to_row])
+                        sub_df.dropna(how='all', axis=1, inplace=True)
+                        sub_df.fillna(value="", inplace=True)
+                        st.dataframe(sub_df, use_container_width=True, hide_index=True)
                 else:
                     st.write("No vital signs data for this encounter.")
 
@@ -1630,6 +1607,7 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                         obs_clean_df_group.sort_values('Timestamp', ascending=True, inplace=True)
                         obs_clean_df_group_pivot = obs_clean_df_group.pivot(index='Observation', columns='Timestamp', values='Value')
                         obs_clean_df_group_pivot.reset_index(inplace=True)
+                        obs_clean_df_group_pivot.dropna(how='all', axis=1, inplace=True)
                         obs_clean_df_group_pivot.fillna(value="", inplace=True)
 
                         # Note: JH-HLM replacement and total score calculations are precomputed
