@@ -575,7 +575,7 @@ class VitalsGrouper:
                     # Heart
                     "heart rate", "hr", "pulse", "ventricular rate", "atrial rate", "bpm",
                     # Respiratory
-                    "respiratory rate", "rr", "breaths", "vent rate", "resp rate",
+                    "respiratory rate", "breaths", "vent rate", "resp rate",
                 ),
                 "priority": 2,
             },
@@ -596,20 +596,20 @@ class VitalsGrouper:
             },
             "Oxygen Therapy/Delivery": {
                 "keywords": (
-                    "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nc", "nonrebreather", "nrb",
+                    "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nonrebreather", "nrb",
                     "venturi", "trach collar"
                 ),
                 "priority": 7,
             },
             "Ventilation/Device Settings": {
                 "keywords": (
-                    "ventilator", "mode", "peep", "pip", "ps", "pressure support", "tidal volume", "vt",
+                    "ventilator", "mode", "peep", "pip", "pressure support", "tidal volume", "vt",
                     "minute ventilation", "mv", "insp time", "i:e ratio", "rate (vent)"
                 ),
                 "priority": 8,
             },
             "Hemodynamics (Advanced)": {
-                "keywords": ("cvp", "co", "cardiac output", "ci", "cardiac index", "sv", "svr", "pvr", "svv", "ppv"),
+                "keywords": ("cvp", "cardiac output", "cardiac index", "svr", "pvr", "svv", "ppv"),
                 "priority": 9,
             },
             "ECG/Rhythm & Intervals": {
@@ -685,7 +685,7 @@ def _classify_vital_cached(n: str) -> str:
         return 'Oxygen Therapy/Delivery'
     if any(k in n for k in ('etco2', 'end tidal', 'capnograph', 'petco2')):
         return 'Capnography'
-    if any(k in n for k in ('ventilator', 'mode', 'peep', 'pip', 'ps', 'pressure support', 'tidal volume', 'vt', 'minute ventilation', 'mv', 'insp time', 'i:e ratio', 'rate (vent)')):
+    if any(k in n for k in ('ventilator', 'mode', 'peep', 'pip', 'pressure support', 'tidal volume', 'vt', 'minute ventilation', 'mv', 'insp time', 'i:e ratio', 'rate (vent)')):
         return 'Ventilation/Device Settings'
     if any(k in n for k in ('cvp', 'cardiac output', 'cardiac index', 'svr', 'pvr', 'svv', 'ppv')):
         return 'Hemodynamics (Advanced)'
