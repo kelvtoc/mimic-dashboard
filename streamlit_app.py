@@ -565,7 +565,7 @@ class VitalsGrouper:
         self.categories: Dict[str, Dict[str, Any]] = {
             "Blood Pressure": {
                 "keywords": (
-                    "systolic", "diastolic", "map", "mean arterial", "blood pressure", "bp", "nbp", "abp",
+                    "systolic", "diastolic", "mean arterial", "blood pressure",
                     "arterial line", "invasive blood pressure", "non-invasive blood pressure"
                 ),
                 "priority": 1,
@@ -666,26 +666,28 @@ class VitalsGrouper:
 
 @st.cache_data
 def _classify_vital_cached(n: str) -> str:
-    if any(k in n for k in ('systolic', 'diastolic', 'mean arterial', 'map')) or (
-        ('bp' in n) or ('blood pressure' in n) or ('abp' in n) or ('nbp' in n)
+    if any(k in n for k in ('systolic', 'diastolic', 'mean arterial')) or (
+        ('blood pressure' in n)
     ):
         return 'Blood Pressure'
-    if any(k in n for k in ('spo2', 'sao2', 'oxygen saturation', 'pulse ox', 'o2 sat', 'sat')):
-        return 'Oxygenation'
-    if any(k in n for k in ('fio2', 'oxygen flow', 'o2 flow', 'nasal cannula', 'nc', 'nonrebreather', 'nrb', 'venturi', 'trach collar', 'l/min')):
-        return 'Oxygen Therapy/Delivery'
-    if any(k in n for k in ('etco2', 'end tidal', 'capnograph', 'petco2')):
-        return 'Capnography'
     if any(k in n for k in (
-        'respiratory rate', 'rr', 'resp rate', 'breaths', 'vent rate',
-        'heart rate', 'hr', 'pulse', 'ventricular rate', 'atrial rate', 'bpm'
+        'respiratory rate', 'resp rate', 'breaths', 'vent rate',
+        'heart rate', 'pulse', 'ventricular rate', 'atrial rate', 'bpm'
     )):
         return 'Heart/Respiratory Rate'
     if any(k in n for k in ('temperature', 'temp', 'tympanic', 'oral', 'rectal', 'axillary', 'core', 'esophageal', 'bladder', '°c', '(c)', '°f', '(f)')):
         return 'Temperature'
+    if any(k in n for k in ('height', 'weight', 'bmi', 'body mass', 'head circumference', 'mid-arm circumference')):
+        return 'Anthropometrics'
+    if any(k in n for k in ('spo2', 'sao2', 'oxygen saturation', 'pulse ox', 'o2 sat')):
+        return 'Oxygenation'
+    if any(k in n for k in ('fio2', 'oxygen flow', 'o2 flow', 'nasal cannula', 'nonrebreather', 'venturi', 'trach collar', 'l/min')):
+        return 'Oxygen Therapy/Delivery'
+    if any(k in n for k in ('etco2', 'end tidal', 'capnograph', 'petco2')):
+        return 'Capnography'
     if any(k in n for k in ('ventilator', 'mode', 'peep', 'pip', 'ps', 'pressure support', 'tidal volume', 'vt', 'minute ventilation', 'mv', 'insp time', 'i:e ratio', 'rate (vent)')):
         return 'Ventilation/Device Settings'
-    if any(k in n for k in ('cvp', 'cardiac output', 'co', 'ci', 'cardiac index', 'sv', 'svr', 'pvr', 'svv', 'ppv')):
+    if any(k in n for k in ('cvp', 'cardiac output', 'cardiac index', 'svr', 'pvr', 'svv', 'ppv')):
         return 'Hemodynamics (Advanced)'
     if any(k in n for k in ('rhythm', 'telemetry', 'qtc', 'qt ', 'pr interval', 'qrs', 'st segment', 'ectopy', 'afib', 'atrial fibrillation')):
         return 'ECG/Rhythm & Intervals'
@@ -693,8 +695,6 @@ def _classify_vital_cached(n: str) -> str:
         return 'Neurologic'
     if any(k in n for k in ('pain', 'pain score', 'nrs', 'vas', 'cpot')):
         return 'Pain'
-    if any(k in n for k in ('height', 'weight', 'bmi', 'body mass', 'head circumference', 'mid-arm circumference')):
-        return 'Anthropometrics'
     if any(k in n for k in ('intake', 'output', 'urine output', 'uop', 'urinary', 'drain', 'chest tube', 'ng output', 'emesis', 'stool')):
         return 'Fluid Balance (I&O)'
     if any(k in n for k in ('poc glucose', 'fingerstick', 'accu', 'accucheck', 'fs glucose', 'bedside glucose')):
