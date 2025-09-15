@@ -6,7 +6,6 @@ import logging
 import re
 import hashlib
 from datetime import datetime
-from difflib import SequenceMatcher
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
@@ -398,61 +397,89 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
         ),
         'priority': 6
     },
+    'Microbiology': {
+        'keywords': (
+            # Culture-related
+            'culture', 'anaerobic', 'aerobic', 'bottle', 'blood culture', 'urine culture',
+            'wound culture', 'fluid culture', 'tissue', 'respiratory culture', 'fecal culture',
+            'stool', 'sputum', 'gram stain',
+            # Specific screens and PCR
+            'mrsa', 'vre', 'c. difficile', 'difficile', 'pcr',
+            # Stains and parasites
+            'ova', 'parasites', 'acid fast', 'afsmear', 'cyclospora', 'microsporidia',
+            'cryptosporidium', 'giardia',
+            # Fungal and viral
+            'fungal', 'virus', 'viral', 'ebv', 'cmv', 'hcv', 'hiv', 'varicella', 'rubeola',
+            'rubella', 'toxoplasma', 'legionella',
+            # Serology-specific (to distinguish from general immune)
+            'igg', 'igm', 'ebna', 'vca', 'serology',
+            # Organisms (common in micro reports)
+            'enterobacter', 'escherichia', 'staphylococcus', 'enterococcus', 'acinetobacter',
+            'coagulase negative',
+            # Common antibiotics for susceptibility panels (specific to micro context)
+            'levofloxacin', 'clindamycin', 'erythromycin', 'meropenem', 'cefepime',
+            'piperacillin', 'ciprofloxacin', 'ceftriaxone', 'ceftazidime', 'tobramycin',
+            'gentamicin', 'trimethoprim', 'vancomycin', 'rifampin', 'oxacillin',
+            'tetracycline', 'daptomycin', 'ampicillin', 'cefazolin', 'amikacin',
+            'sulfa'
+        ),
+        'priority': 7
+    },
     'Blood_Gas': {
         'keywords': (
             'ph', 'pco2', 'po2', 'co2 pressure', 'o2 pressure', 'o2 saturation',
             'oxygen', 'base excess', 'arterial', 'venous', 'lactate', 'lactic'
         ),
-        'priority': 7
+        'priority': 8
     },
     'Coagulation': {
         'keywords': (
             'pt', 'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
             'coagulation', 'clotting'
         ),
-        'priority': 8
+        'priority': 9
     },
     'Hormones_Endocrine': {
         'keywords': (
             'hormone', 'parathyroid', 'pth', 'thyroid', 'tsh', 't4', 't3',
             'cortisol', 'insulin', 'hba1c', 'hemoglobin a1c'
         ),
-        'priority': 9
+        'priority': 10
     },
     'Inflammatory_Immune': {
         'keywords': (
             'crp', 'esr', 'sed rate', 'complement', 'immunoglobulin', 'rheumatoid',
             'ana', 'antinuclear'
         ),
-        'priority': 10
+        'priority': 11
     },
     'Enzymes_Other': {
         'keywords': (
             'lipase', 'amylase', 'aldolase', 'enzyme', 'kinase', 'transferase',
             'dehydrogenase', 'haptoglobin'
         ),
-        'priority': 11
+        'priority': 12
     },
     'Urine_Analysis': {
         'keywords': (
             'urine', 'urinalysis', 'specific gravity', 'ketone', 'nitrite',
             'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen'
         ),
-        'priority': 12
+        'priority': 13
     },
     'Drugs_Toxicology': {
         'keywords': (
             'vancomycin', 'digoxin', 'lithium', 'drug', 'toxic', 'level',
             'therapeutic', 'peak', 'trough'
         ),
-        'priority': 13
+        'priority': 14
     },
     'Specimen_Info': {
         'keywords': (
             'hold', 'tube', 'collection', 'specimen', 'temperature', 'appearance',
             'color', 'mucous', 'edta', 'green top'
         ),
-        'priority': 14
+        'priority': 15
     },
 }
 
@@ -461,247 +488,152 @@ def _clean_lab_name_cached(lab_name: str) -> str:
     cleaned = lab_name.lower().strip()
     cleaned = re.sub(r'\s*\([^)]*\)', '', cleaned)
     cleaned = re.sub(r'\s*#/\w+', '', cleaned)
-    cleaned = re.sub(r'^(calculated|arterial|venous|total|free|ionized)\s+', '', cleaned)
-    cleaned = re.sub(r'\s+(serum|plasma|whole blood|urine|dipstick|units)$', '', cleaned)
     return cleaned.strip()
 
 @st.cache_data
-def _find_best_lab_category_cached(cleaned_name: str, threshold: float = 0.3) -> Tuple[str, float]:
+def _find_lab_category_cached(cleaned_name: str) -> str:
+    """Find best lab category using simple keyword counts; fall back to 'Uncategorized'."""
     best_cat = 'Uncategorized'
-    best_score = 0.0
+    best_count = 0
     for cat, info in LAB_SORTING_CATEGORIES.items():
         kws = info['keywords']
-        matches = sum(1 for kw in kws if kw in cleaned_name)
-        if matches:
-            score = 0.9 + 0.1 * matches
-        else:
-            score = 0.0
-            for kw in kws:
-                if len(kw) >= 4 and (kw[:4] in cleaned_name or kw[-4:] in cleaned_name):
-                    score = max(score, 0.6)
-                    continue
-                sim = SequenceMatcher(None, kw, cleaned_name).ratio()
-                if sim > threshold:
-                    score = max(score, sim * 0.7)
-        if score > best_score:
-            best_cat, best_score = cat, score
-    return best_cat, best_score
+        count = sum(1 for kw in kws if kw in cleaned_name)
+        if count > best_count or (count == best_count and best_cat == 'Uncategorized'):
+            if count > 0:
+                best_cat = cat
+                best_count = count
+    return best_cat
 
 # --- Lab Sorting
 
-class GenericLabSorter:
-    """Utility to categorize and sort lab names into clinically relevant groups (cached)."""
+def clean_lab_name(lab_name: str) -> str:
+    return _clean_lab_name_cached(lab_name)
 
-    def __init__(self) -> None:
-        self.sorting_categories = LAB_SORTING_CATEGORIES
+def find_lab_category(lab_name: str) -> str:
+    cleaned_name = _clean_lab_name_cached(lab_name)
+    return _find_lab_category_cached(cleaned_name)
 
-    def clean_lab_name(self, lab_name: str) -> str:
-        """Clean lab name for better matching"""
-        # Convert to lowercase for matching
-        cleaned = lab_name.lower().strip()
-        
-        # Remove common suffixes/prefixes that don't affect categorization
-        cleaned = re.sub(r'\s*\([^)]*\)', '', cleaned)  # Remove units in parentheses
-        cleaned = re.sub(r'\s*#/\w+', '', cleaned)      # Remove count units like #/hpf
-        cleaned = re.sub(r'^(calculated|arterial|venous|total|free|ionized)\s+', '', cleaned)
-        cleaned = re.sub(r'\s+(serum|plasma|whole blood|urine|dipstick|units)$', '', cleaned)
-        
-        return cleaned.strip()
-
-    def calculate_similarity(self, text1: str, text2: str) -> float:
-        """Calculate similarity between two text strings"""
-        return SequenceMatcher(None, text1.lower(), text2.lower()).ratio()
-
-    def find_best_category(self, lab_name: str, threshold: float = 0.3) -> Tuple[str, float]:
-        """Find the best matching category for a lab name"""
-        cleaned_name = _clean_lab_name_cached(lab_name)
-        return _find_best_lab_category_cached(cleaned_name, threshold)
-
-    def sort_labs(self, lab_list: List[str], similarity_threshold: float = 0.3) -> Dict[str, List[Tuple[str, float]]]:
-        """Sort labs into categories with confidence scores"""
-        sorted_labs = {}
-        
-        for lab in lab_list:
-            category, confidence = self.find_best_category(lab, similarity_threshold)
-            
-            if category not in sorted_labs:
-                sorted_labs[category] = []
-            
-            sorted_labs[category].append((lab, confidence))
-        
-        # Sort categories by priority, then sort labs within each category alphabetically
-        final_sorted: Dict[str, List[Tuple[str, float]]] = {}
-        
-        # Get category priorities
-        category_priorities = {cat: info['priority'] for cat, info in self.sorting_categories.items()}
-        category_priorities['Uncategorized'] = 999  # Put uncategorized last
-        
-        # Sort categories by priority
-        sorted_categories = sorted(sorted_labs.keys(), key=lambda x: category_priorities.get(x, 999))
-        
-        for category in sorted_categories:
-            # Sort labs within category alphabetically
-            final_sorted[category] = sorted(sorted_labs[category], key=lambda x: x[0])
-        
-        return final_sorted
-
-    def get_simple_sorted_list(self, lab_list: List[str]) -> List[str]:
-        """Get a simple alphabetically sorted list within categories"""
-        sorted_labs = self.sort_labs(lab_list)
-        result = []
-        
-        for category in sorted(sorted_labs.keys(), 
-                             key=lambda x: self.sorting_categories.get(x, {}).get('priority', 999)):
-            for lab, _ in sorted_labs[category]:
-                result.append(lab)
-        
-        return result
+def sort_labs_by_category(lab_list: List[str]) -> Dict[str, List[str]]:
+    grouped: Dict[str, List[str]] = {}
+    for lab in lab_list:
+        cat = find_lab_category(lab)
+        grouped.setdefault(cat, []).append(lab)
+    # Priorities with 'Uncategorized' last
+    priorities = {cat: info['priority'] for cat, info in LAB_SORTING_CATEGORIES.items()}
+    priorities['Uncategorized'] = 999
+    ordered: Dict[str, List[str]] = {}
+    for cat in sorted(grouped.keys(), key=lambda c: priorities.get(c, 999)):
+        ordered[cat] = sorted(grouped[cat], key=lambda s: s.lower())
+    return ordered
 
 
-class VitalsGrouper:
-    """Group vital names into categories with BP-specific ordering."""
+VITAL_CATEGORIES: Dict[str, Dict[str, Any]] = {
+    "Blood Pressure": {
+        "keywords": (
+            "systolic", "diastolic", "mean arterial", "blood pressure",
+            "arterial line", "invasive blood pressure", "non-invasive blood pressure"
+        ),
+        "priority": 1,
+    },
+    "Heart/Respiratory Rate": {
+        "keywords": (
+            # Heart
+            "heart rate", "hr", "pulse", "ventricular rate", "atrial rate", "bpm",
+            # Respiratory
+            "respiratory rate", "breaths", "vent rate", "resp rate",
+        ),
+        "priority": 2,
+    },
+    "Temperature": {
+        "keywords": (
+            "temperature", "temp", "tympanic", "oral", "rectal", "axillary", "core", "esophageal",
+            "bladder", "°c", "(c)", "°f", "(f)"
+        ),
+        "priority": 4,
+    },
+    "Oxygenation": {
+        "keywords": ("spo2", "oxygen saturation", "o2 sat", "pulse ox", "sat", "sao2"),
+        "priority": 5,
+    },
+    "Capnography": {
+        "keywords": ("etco2", "end tidal", "capnograph", "petco2"),
+        "priority": 6,
+    },
+    "Oxygen Therapy/Delivery": {
+        "keywords": (
+            "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nonrebreather", "nrb",
+            "venturi", "trach collar"
+        ),
+        "priority": 7,
+    },
+    "Ventilation/Device Settings": {
+        "keywords": (
+            "ventilator", "mode", "peep", "pip", "pressure support", "tidal volume", "vt",
+            "minute ventilation", "mv", "insp time", "i:e ratio", "rate (vent)"
+        ),
+        "priority": 8,
+    },
+    "Hemodynamics (Advanced)": {
+        "keywords": ("cvp", "cardiac output", "cardiac index", "svr", "pvr", "svv", "ppv"),
+        "priority": 9,
+    },
+    "ECG/Rhythm & Intervals": {
+        "keywords": (
+            "rhythm", "telemetry", "qtc", "qt ", "pr interval", "qrs", "st segment", "ectopy", "afib",
+            "atrial fibrillation"
+        ),
+        "priority": 10,
+    },
+    "Neurologic": {
+        "keywords": ("gcs", "glasgow", "pupil", "pupill", "rass", "richmond", "cam-icu", "sedation", "avpu"),
+        "priority": 11,
+    },
+    "Pain": {
+        "keywords": ("pain", "pain score", "nrs", "vas", "cpot"),
+        "priority": 12,
+    },
+    "Anthropometrics": {
+        "keywords": ("height", "weight", "bmi", "body mass", "head circumference", "mid-arm circumference"),
+        "priority": 13,
+    },
+    "Point-of-Care Glucose": {
+        "keywords": ("poc glucose", "fingerstick", "accu", "accucheck", "fs glucose", "bedside glucose"),
+        "priority": 14,
+    },
+    "Fluid Balance (I&O)": {
+        "keywords": ("intake", "output", "urine output", "uop", "urinary", "drain", "chest tube", "ng output", "emesis", "stool"),
+        "priority": 15,
+    },
+}
 
-    def __init__(self) -> None:
-        self.categories: Dict[str, Dict[str, Any]] = {
-            "Blood Pressure": {
-                "keywords": (
-                    "systolic", "diastolic", "mean arterial", "blood pressure",
-                    "arterial line", "invasive blood pressure", "non-invasive blood pressure"
-                ),
-                "priority": 1,
-            },
-            "Heart/Respiratory Rate": {
-                "keywords": (
-                    # Heart
-                    "heart rate", "hr", "pulse", "ventricular rate", "atrial rate", "bpm",
-                    # Respiratory
-                    "respiratory rate", "breaths", "vent rate", "resp rate",
-                ),
-                "priority": 2,
-            },
-            "Temperature": {
-                "keywords": (
-                    "temperature", "temp", "tympanic", "oral", "rectal", "axillary", "core", "esophageal",
-                    "bladder", "°c", "(c)", "°f", "(f)"
-                ),
-                "priority": 4,
-            },
-            "Oxygenation": {
-                "keywords": ("spo2", "oxygen saturation", "o2 sat", "pulse ox", "sat", "sao2"),
-                "priority": 5,
-            },
-            "Capnography": {
-                "keywords": ("etco2", "end tidal", "capnograph", "petco2"),
-                "priority": 6,
-            },
-            "Oxygen Therapy/Delivery": {
-                "keywords": (
-                    "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nonrebreather", "nrb",
-                    "venturi", "trach collar"
-                ),
-                "priority": 7,
-            },
-            "Ventilation/Device Settings": {
-                "keywords": (
-                    "ventilator", "mode", "peep", "pip", "pressure support", "tidal volume", "vt",
-                    "minute ventilation", "mv", "insp time", "i:e ratio", "rate (vent)"
-                ),
-                "priority": 8,
-            },
-            "Hemodynamics (Advanced)": {
-                "keywords": ("cvp", "cardiac output", "cardiac index", "svr", "pvr", "svv", "ppv"),
-                "priority": 9,
-            },
-            "ECG/Rhythm & Intervals": {
-                "keywords": (
-                    "rhythm", "telemetry", "qtc", "qt ", "pr interval", "qrs", "st segment", "ectopy", "afib",
-                    "atrial fibrillation"
-                ),
-                "priority": 10,
-            },
-            "Neurologic": {
-                "keywords": ("gcs", "glasgow", "pupil", "pupill", "rass", "richmond", "cam-icu", "sedation", "avpu"),
-                "priority": 11,
-            },
-            "Pain": {
-                "keywords": ("pain", "pain score", "nrs", "vas", "cpot"),
-                "priority": 12,
-            },
-            "Anthropometrics": {
-                "keywords": ("height", "weight", "bmi", "body mass", "head circumference", "mid-arm circumference"),
-                "priority": 13,
-            },
-            "Point-of-Care Glucose": {
-                "keywords": ("poc glucose", "fingerstick", "accu", "accucheck", "fs glucose", "bedside glucose"),
-                "priority": 14,
-            },
-            "Fluid Balance (I&O)": {
-                "keywords": ("intake", "output", "urine output", "uop", "urinary", "drain", "chest tube", "ng output", "emesis", "stool"),
-                "priority": 15,
-            },
-        }
-
-    def category_priority(self, category: str) -> int:
-        return self.categories.get(category, {}).get('priority', 999)
-
-    def classify(self, name: str) -> str:
-        return _classify_vital_cached(name.lower().strip())
-
-    def order_names_within_category(self, category: str, names: List[str]) -> List[str]:
-        if category == 'Blood Pressure':
-            def bp_key(x: str) -> tuple:
-                xl = x.lower()
-                if 'systolic' in xl:
-                    p = 0
-                elif 'diastolic' in xl:
-                    p = 1
-                elif ('map' in xl) or ('mean arterial' in xl):
-                    p = 2
-                else:
-                    p = 3
-                return (p, xl)
-            return sorted(names, key=bp_key)
-        return sorted(names, key=lambda s: s.lower())
-
+def vital_category_priority(category: str) -> int:
+    return VITAL_CATEGORIES.get(category, {}).get('priority', 999)
 
 @st.cache_data
-def _classify_vital_cached(n: str) -> str:
-    if any(k in n for k in ('systolic', 'diastolic', 'mean arterial')) or (
-        ('blood pressure' in n)
-    ):
-        return 'Blood Pressure'
-    if any(k in n for k in (
-        'respiratory rate', 'resp rate', 'breaths', 'vent rate',
-        'heart rate', 'pulse', 'ventricular rate', 'atrial rate', 'bpm'
-    )):
-        return 'Heart/Respiratory Rate'
-    if any(k in n for k in ('temperature', 'temp', 'tympanic', 'oral', 'rectal', 'axillary', 'core', 'esophageal', 'bladder', '°c', '(c)', '°f', '(f)')):
-        return 'Temperature'
-    if any(k in n for k in ('height', 'weight', 'bmi', 'body mass', 'head circumference', 'mid-arm circumference')):
-        return 'Anthropometrics'
-    if any(k in n for k in ('spo2', 'sao2', 'oxygen saturation', 'pulse ox', 'o2 sat')):
-        return 'Oxygenation'
-    if any(k in n for k in ('fio2', 'oxygen flow', 'o2 flow', 'nasal cannula', 'nonrebreather', 'venturi', 'trach collar', 'l/min')):
-        return 'Oxygen Therapy/Delivery'
-    if any(k in n for k in ('etco2', 'end tidal', 'capnograph', 'petco2')):
-        return 'Capnography'
-    if any(k in n for k in ('ventilator', 'mode', 'peep', 'pip', 'pressure support', 'tidal volume', 'vt', 'minute ventilation', 'mv', 'insp time', 'i:e ratio', 'rate (vent)')):
-        return 'Ventilation/Device Settings'
-    if any(k in n for k in ('cvp', 'cardiac output', 'cardiac index', 'svr', 'pvr', 'svv', 'ppv')):
-        return 'Hemodynamics (Advanced)'
-    if any(k in n for k in ('rhythm', 'telemetry', 'qtc', 'qt ', 'pr interval', 'qrs', 'st segment', 'ectopy', 'afib', 'atrial fibrillation')):
-        return 'ECG/Rhythm & Intervals'
-    if any(k in n for k in ('gcs', 'glasgow', 'pupil', 'pupill', 'rass', 'richmond', 'cam-icu', 'sedation', 'avpu')):
-        return 'Neurologic'
-    if any(k in n for k in ('pain', 'pain score', 'nrs', 'vas', 'cpot')):
-        return 'Pain'
-    if any(k in n for k in ('intake', 'output', 'urine output', 'uop', 'urinary', 'drain', 'chest tube', 'ng output', 'emesis', 'stool')):
-        return 'Fluid Balance (I&O)'
-    if any(k in n for k in ('poc glucose', 'fingerstick', 'accu', 'accucheck', 'fs glucose', 'bedside glucose')):
-        return 'Point-of-Care Glucose'
+def classify_vital(name: str) -> str:
+    n = name.lower().strip()
+    # Evaluate categories in priority order
+    for category in sorted(VITAL_CATEGORIES.keys(), key=vital_category_priority):
+        if any(k in n for k in VITAL_CATEGORIES[category]['keywords']):
+            return category
     return 'Other'
 
-    # Optional: similar labs detection retained if needed elsewhere
+def order_names_within_category(category: str, names: List[str]) -> List[str]:
+    if category == 'Blood Pressure':
+        def bp_key(x: str) -> tuple:
+            xl = x.lower()
+            if 'systolic' in xl:
+                p = 0
+            elif 'diastolic' in xl:
+                p = 1
+            elif ('map' in xl) or ('mean arterial' in xl):
+                p = 2
+            else:
+                p = 3
+            return (p, xl)
+        return sorted(names, key=bp_key)
+    return sorted(names, key=lambda s: s.lower())
+
 
 # --- Data Stitching Logic ---
 # @st.cache_data
@@ -729,17 +661,14 @@ def prepare_grouped_conditions(enc_conditions_df: pd.DataFrame) -> pd.DataFrame:
 
 def prepare_lab_sorted_groups(labs_clean_df: pd.DataFrame) -> Dict[str, List[str]]:
     """
-    Categorize labs into groups using GenericLabSorter and return mapping of
+    Categorize labs into groups using keyword matching and return mapping of
     category -> list of lab names in display order.
     """
     if labs_clean_df is None or labs_clean_df.empty:
         return {}
 
-    sorter = GenericLabSorter()
     unique_labs = sorted(labs_clean_df["Lab Test"].unique().tolist())
-    sorted_labs = sorter.sort_labs(unique_labs)
-    # Convert (lab, confidence) tuples to just lab names, preserving order
-    return {cat: [lab for lab, _ in items] for cat, items in sorted_labs.items()}
+    return sort_labs_by_category(unique_labs)
 
 
 def stitch_encounter_data(_data, locations_map, med_map):
@@ -770,8 +699,7 @@ def stitch_encounter_data(_data, locations_map, med_map):
     med_disp_df = pd.concat([_data.get('MimicMedicationDispense', pd.DataFrame()), _data.get('MimicMedicationDispenseED', pd.DataFrame())])
     med_admin_df = pd.concat([_data.get('MimicMedicationAdministration', pd.DataFrame()), _data.get('MimicMedicationAdministrationICU', pd.DataFrame())])
     vitals_df = pd.concat([_data.get('MimicObservationVitalSignsED', pd.DataFrame()), _data.get('MimicObservationChartevents', pd.DataFrame()), _data.get('MimicObservationED', pd.DataFrame()), _data.get('MimicObservationOutputevents', pd.DataFrame()), _data.get('MimicObservationDatetimeevents', pd.DataFrame())])
-    micro_org_df = pd.concat([_data.get('MimicObservationMicroSusc', pd.DataFrame()), _data.get('MimicObservationMicroTest', pd.DataFrame()), _data.get('MimicObservationMicroOrg', pd.DataFrame())])
-    labs_df = _data.get('MimicObservationLabevents', pd.DataFrame())
+    labs_df = pd.concat([_data.get('MimicObservationLabevents', pd.DataFrame()), _data.get('MimicObservationMicroSusc', pd.DataFrame()), _data.get('MimicObservationMicroTest', pd.DataFrame()), _data.get('MimicObservationMicroOrg', pd.DataFrame())])
     diag_df = _data.get('MimicDiagnosticReport', pd.DataFrame())
     docs_df = _data.get('MimicDocumentReference', pd.DataFrame())
 
@@ -1281,43 +1209,6 @@ def stitch_encounter_data(_data, locations_map, med_map):
             enc_procs_df['EndTime'] = enc_procs_df['EndTime'].apply(format_datetime)
         else:
             enc_procs_df = pd.DataFrame()
-
-
-        # --- Microbiology ---
-        enc_micro = []
-        for _, row in micro_org_df.iterrows():
-            micro_name = safe_get(
-                row, 
-                ['code.coding', 0, 'display'], 
-                safe_get(row, ['code', 'coding', 0, 'display'], 'N/A')
-            )
-
-            val = ''
-            if 'valueString' in row:
-                if pd.notna(row['valueString']):
-                    val = row['valueString']
-
-            if 'valueCodeableConcept.coding' in row:
-                if pd.notna(row['valueCodeableConcept.coding']):
-                    val = row['valueCodeableConcept.coding'][0]['display']
-
-            time = ''
-            if 'effectiveDateTime' in row:
-                if pd.notna(row['effectiveDateTime']):
-                    time = row['effectiveDateTime']
-
-            enc_micro.append({
-                'Microbiology': micro_name,
-                'Value': val,
-                'Time': time
-            })
-        if len(enc_micro) > 0:
-            enc_micro_df = pd.DataFrame(enc_micro)
-            enc_micro_df['Time'] = pd.to_datetime(enc_micro_df['Time'], errors='coerce')
-            enc_micro_df['Time'] = enc_micro_df['Time'].apply(format_datetime)
-        else:
-            enc_micro_df = pd.DataFrame()
-        
         
         # Precompute condition groups and lab categories for reuse in UI
         conditions_grouped_df = prepare_grouped_conditions(enc_conditions_df)
@@ -1335,7 +1226,6 @@ def stitch_encounter_data(_data, locations_map, med_map):
             'observations': observations_clean_df,
             'labs': labs_clean_df, 
             'lab_sorted_groups': lab_sorted_groups,
-            'microorg': enc_micro_df,
             'diagnostic_reports': enc_diag_df,
             'reports': enc_docs_df,
             'related_encounter_ids': related_enc_ids
@@ -1564,7 +1454,6 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                 
                 if not vitals_clean_df.empty:
                     # Group vitals into clinically-meaningful categories and display per group
-                    vg = VitalsGrouper()
                     # Prepare base pivoted data for easy slicing by Vital name
                     vitals_clean_df.sort_values('Timestamp', ascending=True, inplace=True)
                     vit_pivot = vitals_clean_df.pivot(index='Vital', columns='Timestamp', values='Value')
@@ -1578,12 +1467,12 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                     # Bucket by category
                     buckets: Dict[str, List[str]] = {}
                     for name in unique_vital_names:
-                        cat = vg.classify(name)
+                        cat = classify_vital(name)
                         buckets.setdefault(cat, []).append(name)
 
                     # Render groups by priority
-                    for category in sorted(buckets.keys(), key=vg.category_priority):
-                        ordered_names = vg.order_names_within_category(category, buckets[category])
+                    for category in sorted(buckets.keys(), key=vital_category_priority):
+                        ordered_names = order_names_within_category(category, buckets[category])
                         if not ordered_names:
                             continue
                         st.subheader(category)
@@ -1634,24 +1523,15 @@ def display_patient_overview(patient_data, stitched_enc_df, locations_map, orgs_
                             labs_group.fillna(value="", inplace=True)
                             st.dataframe(labs_group, use_container_width=True, hide_index=True)
                     else:
-                        # Fallback to previous inline sorting to preserve behavior
-                        sorter = GenericLabSorter()
-                        sorted_labs = sorter.sort_labs(labs_clean_df_pivot['Lab Test'].unique().tolist())
+                        # Fallback to inline sorting using functional API
+                        sorted_labs = sort_labs_by_category(labs_clean_df_pivot['Lab Test'].unique().tolist())
                         for group, labs in sorted_labs.items():
-                            labs = [lab[0] for lab in labs]
                             st.subheader(group.replace("_", " "))
                             labs_group = labs_clean_df_pivot[labs_clean_df_pivot['Lab Test'].isin(labs)].dropna(axis=1, how='all')
                             labs_group.fillna(value="", inplace=True)
                             st.dataframe(labs_group, use_container_width=True, hide_index=True)
                 else:
                     st.write("No lab data for this encounter.")
-
-                st.subheader("Microbiology")
-                microorg_df = enc_row['microorg']
-                if not microorg_df.empty:
-                    st.dataframe(microorg_df, use_container_width=True, hide_index=True)
-                else:
-                    st.write("No microbiology data for this encounter.")
 
             with st.expander("Diagnostic Reports"):
                 enc_diag_df = enc_row['diagnostic_reports']
@@ -1923,22 +1803,6 @@ def display_labs_dashboard(stitched_enc_df: pd.DataFrame) -> None:
         else:
             table = selected.sort_values(['Lab Test', 'Timestamp']).pivot_table(index='Timestamp', columns='Lab Test', values='Value', aggfunc='first')
             st.dataframe(table, use_container_width=True)
-
-    st.subheader("Microbiology")
-    micro_df_list = [enc_row['microorg'] for _, enc_row in stitched_enc_df.iterrows()]
-    if micro_df_list:
-        microorg_df = pd.concat(micro_df_list)
-        microorg_df['Time'] = pd.to_datetime(microorg_df['Time'])
-        microorg_df = microorg_df[
-            microorg_df['Time'].between(pd.Timestamp(time_slider[0]), pd.Timestamp(time_slider[1]))
-        ]
-        if not microorg_df.empty:
-            microorg_df.sort_values('Time', ascending=True, inplace=True)
-            st.dataframe(microorg_df, use_container_width=True, hide_index=True)
-        else:
-            st.write("No microbiology data in selected range.")
-    else:
-        st.write("No microbiology data for this patient.")
 
 
 def display_medications(stitched_enc_df):
