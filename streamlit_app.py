@@ -357,54 +357,61 @@ def get_condition_group_with_confidence(condition: str, icd_code: Optional[str] 
 LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
     'Chemistry_Basic': {
         'keywords': (
-            'glucose', 'sodium', 'potassium', 'chloride', 'bicarbonate', 'co2',
-            'bun', 'urea', 'creatinine', 'anion gap', 'osmolality'
+            'glucose', 'glu-', 'sodium', 'na+', 'potassium',
+            'chloride', 'cl-', 'bicarbonate', 'hco3', 'tco2', 'co2',
+            'bun', 'urea', 'creatinine', 'egfr', 'gfr', 'anion gap', 'osmolality'
         ),
         'priority': 1
     },
     'Chemistry_Extended': {
         'keywords': (
-            'albumin', 'protein', 'calcium', 'phosph', 'magnesium', 'iron',
-            'b12', 'folate', 'tsh', 'vitamin'
+            'albumin', 'prealbumin', 'total protein', 'protein', 'calcium', 'ionized calcium',
+            'phosph', 'phosphate', 'phosphorus', 'magnesium', 'iron', 'ferritin', 'transferrin', 'tibc', 'uibc',
+            'b12', 'cobalamin', 'folate', 'folic acid', 'vitamin d', '25-oh d', '25 hydroxy', '1,25 dihydroxy',
+            'tsh', 'thyroid stimulating hormone', 'free t4', 'free thyroxine', 'free t3', 'triiodothyronine', 'vitamin'
         ),
         'priority': 2
     },
     'Liver_Related': {
         'keywords': (
-            'alt', 'alanine', 'ast', 'aspartate', 'alkaline', 'phosphatase',
-            'bilirubin', 'bili', 'hepatic', 'liver'
+            'alt', 'alanine', 'ast', 'aspartate', 'alkaline phosphatase', 'alkaline', 'phosphatase',
+            'bilirubin', 'bili', 'direct bilirubin', 'indirect bilirubin', 'conjugated', 'unconjugated',
+            'ggt', 'gamma glutamyl', 'ammonia', 'hepatic', 'liver', 'alp'
         ),
         'priority': 3
     },
     'Cardiac_Related': {
         'keywords': (
-            'troponin', 'ck', 'creatine kinase', 'bnp', 'natiuretic', 'cardiac',
-            'heart', 'ck-mb', 'ldh', 'lactate dehydrogenase'
+            'troponin', 'trop i', 'trop t', 'hs troponin', 'high sensitivity troponin',
+            'ck', 'creatine kinase', 'ck-mb', 'myoglobin',
+            'bnp', 'pro-bnp', 'nt-probnp', 'natriuretic', 'cardiac', 'heart',
+            'ldh', 'lactate dehydrogenase'
         ),
         'priority': 4
     },
     'Hematology_Complete': {
         'keywords': (
-            'wbc', 'white blood', 'rbc', 'red blood', 'hemoglobin', 'hematocrit',
-            'platelet', 'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte'
+            'wbc', 'white blood', 'leukocyte', 'rbc', 'red blood', 'hemoglobin', 'hgb', 'hematocrit', 'hct',
+            'platelet', 'plt', 'mpv', 'nrbc', 'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte', 'retic', 'ipf'
         ),
         'priority': 5
     },
     'Hematology_Differential': {
         'keywords': (
-            'neutrophil', 'lymphocyte', 'monocyte', 'eosinophil', 'basophil',
-            'absolute', 'differential', 'basos', 'eos', 'lymphs', 'monos', 'neuts'
+            'neutrophil', 'lymphocyte', 'monocyte', 'eosinophil', 'basophil', 'bands', 'segs',
+            'metamyelocyte', 'myelocyte', 'immature granulocyte',
+            'absolute', 'differential', 'basos', 'eos', 'lymphs', 'monos', 'neuts', 'atypical lymphocyte'
         ),
         'priority': 6
     },
     'Microbiology': {
         'keywords': (
             # Culture-related
-            'culture', 'anaerobic', 'aerobic', 'bottle', 'blood culture', 'urine culture',
-            'wound culture', 'fluid culture', 'tissue', 'respiratory culture', 'fecal culture',
-            'stool', 'sputum', 'gram stain',
+            'culture', 'anaerobic', 'aerobic', 'bottle', 'blood culture', 'urine culture', 'wound culture',
+            'fluid culture', 'tissue', 'respiratory culture', 'fecal culture', 'stool', 'sputum', 'gram stain',
+            'bcx', 'ucx', 'blood cx', 'urine cx', 'resp cx',
             # Specific screens and PCR
-            'mrsa', 'vre', 'c. difficile', 'difficile', 'pcr',
+            'mrsa', 'vre', 'c. difficile', 'difficile', 'pcr', 'naat', 'covid', 'sars-cov-2',
             # Stains and parasites
             'ova', 'parasites', 'acid fast', 'afsmear', 'cyclospora', 'microsporidia',
             'cryptosporidium', 'giardia',
@@ -412,7 +419,7 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
             'fungal', 'virus', 'viral', 'ebv', 'cmv', 'hcv', 'hiv', 'varicella', 'rubeola',
             'rubella', 'toxoplasma', 'legionella',
             # Serology-specific (to distinguish from general immune)
-            'igg', 'igm', 'ebna', 'vca', 'serology',
+            'igg', 'igm', 'iga', 'ige', 'ebna', 'vca', 'serology',
             # Organisms (common in micro reports)
             'enterobacter', 'escherichia', 'staphylococcus', 'enterococcus', 'acinetobacter',
             'coagulase negative',
@@ -421,34 +428,38 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
             'piperacillin', 'ciprofloxacin', 'ceftriaxone', 'ceftazidime', 'tobramycin',
             'gentamicin', 'trimethoprim', 'vancomycin', 'rifampin', 'oxacillin',
             'tetracycline', 'daptomycin', 'ampicillin', 'cefazolin', 'amikacin',
-            'sulfa'
+            'sulfa', 'susceptibility', 'mic '
         ),
         'priority': 7
     },
     'Blood_Gas': {
         'keywords': (
-            'ph', 'pco2', 'po2', 'co2 pressure', 'o2 pressure', 'o2 saturation',
-            'oxygen', 'base excess', 'arterial', 'venous', 'lactate', 'lactic'
+            'abg', 'vbg', 'pco2', 'pco₂', 'po2', 'po₂', 'hco3', 'bicarbonate',
+            'co2 pressure', 'o2 pressure', 'o2 saturation', 'oxygen', 'base excess', 'a-a gradient',
+            'arterial', 'venous', 'lactate', 'lactic', 'carboxyhemoglobin', 'methemoglobin', 'sao2', 'svo2'
         ),
         'priority': 8
     },
     'Coagulation': {
         'keywords': (
-            'pt', 'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
-            'coagulation', 'clotting'
+            'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
+            'coagulation', 'clotting', 'anti-xa', 'd-dimer', 'fibrinogen', 'thrombin time', 'act '
         ),
         'priority': 9
     },
     'Hormones_Endocrine': {
         'keywords': (
-            'hormone', 'parathyroid', 'pth', 'thyroid', 'tsh', 't4', 't3',
-            'cortisol', 'insulin', 'hba1c', 'hemoglobin a1c'
+            'hormone', 'parathyroid', 'pth', 'thyroid', 'tsh',
+            'cortisol', 'acth', 'insulin', 'hba1c', 'hemoglobin a1c',
+            'prolactin', 'testosterone', 'estradiol', 'progesterone', 'fsh',
+            'renin', 'aldosterone', 'growth hormone', 'igf-1'
         ),
         'priority': 10
     },
     'Inflammatory_Immune': {
         'keywords': (
-            'crp', 'esr', 'sed rate', 'complement', 'immunoglobulin', 'rheumatoid',
+            'crp', 'hs-crp', 'procalcitonin', 'esr', 'sed rate', 'sedimentation rate', 'complement',
+            'immunoglobulin', 'igg ', 'iga ', 'igm ', 'ige ', 'rheumatoid', 'anti-ccp',
             'ana', 'antinuclear'
         ),
         'priority': 11
@@ -456,28 +467,33 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
     'Enzymes_Other': {
         'keywords': (
             'lipase', 'amylase', 'aldolase', 'enzyme', 'kinase', 'transferase',
-            'dehydrogenase', 'haptoglobin'
+            'dehydrogenase', 'haptoglobin', 'g6pd', 'cholinesterase'
         ),
         'priority': 12
     },
     'Urine_Analysis': {
         'keywords': (
             'urine', 'urinalysis', 'specific gravity', 'ketone', 'nitrite',
-            'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen'
+            'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen',
+            'proteinuria', 'microalbumin', 'albumin/creatinine ratio', 'acr', 'urine sodium', 'urine creatinine',
+            'urine osmolality', 'glucose urine', 'bilirubin urine', 'rbc/hpf', 'wbc/hpf'
         ),
         'priority': 13
     },
     'Drugs_Toxicology': {
         'keywords': (
             'vancomycin', 'digoxin', 'lithium', 'drug', 'toxic', 'level',
-            'therapeutic', 'peak', 'trough'
+            'therapeutic', 'peak', 'trough',
+            'acetaminophen', 'apap', 'salicylate', 'ethanol', 'barbiturate', 'benzodiazepine',
+            'opiates', 'opiate', 'amphetamines', 'cocaine', 'phenytoin', 'valproic', 'carbamazepine',
+            'theophylline', 'phenobarbital'
         ),
         'priority': 14
     },
     'Specimen_Info': {
         'keywords': (
             'hold', 'tube', 'collection', 'specimen', 'temperature', 'appearance',
-            'color', 'mucous', 'edta', 'green top'
+            'color', 'mucous', 'edta', 'green top', 'hemolyzed', 'lipemic', 'icteric', 'recollect', 'specimen source'
         ),
         'priority': 15
     },
@@ -530,78 +546,79 @@ def sort_labs_by_category(lab_list: List[str]) -> Dict[str, List[str]]:
 VITAL_CATEGORIES: Dict[str, Dict[str, Any]] = {
     "Blood Pressure": {
         "keywords": (
-            "systolic", "diastolic", "mean arterial", "blood pressure",
-            "arterial line", "invasive blood pressure", "non-invasive blood pressure"
+            "systolic", "diastolic", "mean arterial", "map", "blood pressure",
+            "arterial line", "art line", "a-line", "invasive blood pressure", "non-invasive blood pressure", "nibp", "ibp"
         ),
         "priority": 1,
     },
     "Heart/Respiratory Rate": {
         "keywords": (
             # Heart
-            "heart rate", "hr", "pulse", "ventricular rate", "atrial rate", "bpm",
+            "heart rate", "pulse", "pulse rate", "ventricular rate", "atrial rate", "bpm",
             # Respiratory
-            "respiratory rate", "breaths", "vent rate", "resp rate",
+            "respiratory rate", "breaths", "breaths/min", "vent rate", "resp rate", "spontaneous rate"
         ),
         "priority": 2,
     },
     "Temperature": {
         "keywords": (
             "temperature", "temp", "tympanic", "oral", "rectal", "axillary", "core", "esophageal",
-            "bladder", "°c", "(c)", "°f", "(f)"
+            "bladder", "celsius", "fahrenheit", "core temp"
         ),
         "priority": 4,
     },
     "Oxygenation": {
-        "keywords": ("spo2", "oxygen saturation", "o2 sat", "pulse ox", "sat", "sao2"),
+        "keywords": ("spo2", "sp02", "oxygen saturation", "o2 sat", "pulse ox", "sao2", "oximetry"),
         "priority": 5,
     },
     "Capnography": {
-        "keywords": ("etco2", "end tidal", "capnograph", "petco2"),
+        "keywords": ("etco2", "end tidal", "end tidal co2", "capnograph", "capnogram", "petco2"),
         "priority": 6,
     },
     "Oxygen Therapy/Delivery": {
         "keywords": (
             "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nonrebreather", "nrb",
-            "venturi", "trach collar"
+            "venturi", "trach collar", "high flow", "hf nc", "hfnc", "vapotherm", "face mask", "trach"
         ),
         "priority": 7,
     },
     "Ventilation/Device Settings": {
         "keywords": (
-            "ventilator", "mode", "peep", "pip", "pressure support", "tidal volume", "vt",
-            "minute ventilation", "mv", "insp time", "i:e ratio", "rate (vent)"
+            "ventilator", "mode", "peep", "pip", "pressure support", "tidal volume", "tvt",
+            "minute ventilation", "insp time", "i:e ratio", "rate (vent)",
+            "simv", "pcv", "prvc", "psv", "aprv", "cpap", "bipap"
         ),
         "priority": 8,
     },
     "Hemodynamics (Advanced)": {
-        "keywords": ("cvp", "cardiac output", "cardiac index", "svr", "pvr", "svv", "ppv"),
+        "keywords": ("cvp", "cardiac output", "cardiac index", "svr", "pvr", "svv", "ppv", "pap", "pas", "pad", "pcwp", "pawp", "stroke volume"),
         "priority": 9,
     },
     "ECG/Rhythm & Intervals": {
         "keywords": (
-            "rhythm", "telemetry", "qtc", "qt ", "pr interval", "qrs", "st segment", "ectopy", "afib",
-            "atrial fibrillation"
+            "rhythm", "telemetry", "qtc", "qtcf", "qt interval", "pr interval", "p-r", "rr interval", "qrs", "st segment", "st elevation", "st depression",
+            "ectopy", "afib", "atrial fibrillation", "aflutter", "pvc", "pac"
         ),
         "priority": 10,
     },
     "Neurologic": {
-        "keywords": ("gcs", "glasgow", "pupil", "pupill", "rass", "richmond", "cam-icu", "sedation", "avpu"),
+        "keywords": ("gcs", "glasgow", "gcs eye", "gcs motor", "gcs verbal", "pupil", "pupil size", "pupil reactivity", "pupill", "npi", "rass", "richmond", "cam-icu", "sedation", "avpu"),
         "priority": 11,
     },
     "Pain": {
-        "keywords": ("pain", "pain score", "nrs", "vas", "cpot"),
+        "keywords": ("pain", "pain score", "nrs", "vas", "cpot", "faces"),
         "priority": 12,
     },
     "Anthropometrics": {
-        "keywords": ("height", "weight", "bmi", "body mass", "head circumference", "mid-arm circumference"),
+        "keywords": ("height", "weight", "admission weight", "dry weight", "bmi", "body mass", "head circumference", "mid-arm circumference"),
         "priority": 13,
     },
     "Point-of-Care Glucose": {
-        "keywords": ("poc glucose", "fingerstick", "accu", "accucheck", "fs glucose", "bedside glucose"),
+        "keywords": ("poc glucose", "fingerstick", "accu", "accucheck", "accu-chek", "fs glucose", "bedside glucose", "glucometer"),
         "priority": 14,
     },
     "Fluid Balance (I&O)": {
-        "keywords": ("intake", "output", "urine output", "uop", "urinary", "drain", "chest tube", "ng output", "emesis", "stool"),
+        "keywords": ("intake", "output", "i&o", "ins", "outs", "net", "balance", "urine output", "uop", "urinary", "ostomy", "drain", "chest tube", "ng output", "emesis", "stool", "po intake", "iv intake"),
         "priority": 15,
     },
 }
