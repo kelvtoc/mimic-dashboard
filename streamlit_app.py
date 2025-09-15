@@ -359,7 +359,7 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
         'keywords': (
             'glucose', 'glu-', 'sodium', 'na+', 'potassium',
             'chloride', 'cl-', 'bicarbonate', 'hco3', 'tco2', 'co2',
-            'bun', 'urea', 'creatinine', 'egfr', 'gfr', 'anion gap', 'osmolality'
+            'bun', 'urea', 'creatinine', 'egfr', 'gfr', 'mdrd', 'anion gap', 'osmolality'
         ),
         'priority': 1
     },
@@ -368,7 +368,8 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
             'albumin', 'prealbumin', 'total protein', 'protein', 'calcium', 'ionized calcium',
             'phosph', 'phosphate', 'phosphorus', 'magnesium', 'iron', 'ferritin', 'transferrin', 'tibc', 'uibc',
             'b12', 'cobalamin', 'folate', 'folic acid', 'vitamin d', '25-oh d', '25 hydroxy', '1,25 dihydroxy',
-            'tsh', 'thyroid stimulating hormone', 'free t4', 'free thyroxine', 'free t3', 'triiodothyronine', 'vitamin'
+            'tsh', 'thyroid stimulating hormone', 'free t4', 'free thyroxine', 'free t3', 'triiodothyronine', 'vitamin',
+            'triglyceride', 'triglycerides'
         ),
         'priority': 2
     },
@@ -392,7 +393,11 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
     'Hematology_Complete': {
         'keywords': (
             'wbc', 'white blood', 'leukocyte', 'rbc', 'red blood', 'hemoglobin', 'hgb', 'hematocrit', 'hct',
-            'platelet', 'plt', 'mpv', 'nrbc', 'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte', 'retic', 'ipf'
+            'platelet', 'plt', 'mpv', 'nrbc', 'nucleated red cell', 'nucleated red cells',
+            'mcv', 'mch', 'mchc', 'rdw', 'reticulocyte', 'retic', 'ipf',
+            'anisocytosis', 'hypochromia', 'macrocyte', 'macrocytes', 'microcyte', 'microcytes',
+            'poikilocytosis', 'polychromasia', 'schistocyte', 'schistocytes', 'teardrop cell', 'teardrop cells',
+            'echinocyte', 'echinocytes'
         ),
         'priority': 5
     },
@@ -434,15 +439,16 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
     },
     'Blood_Gas': {
         'keywords': (
-            'abg', 'vbg', 'pco2', 'pco₂', 'po2', 'po₂', 'hco3', 'bicarbonate',
-            'co2 pressure', 'o2 pressure', 'o2 saturation', 'oxygen', 'base excess', 'a-a gradient',
+            'ph', 'abg', 'vbg', 'pco2', 'pco₂', 'po2', 'po₂', 'hco3', 'bicarbonate',
+            'co2 pressure', 'o2 pressure', 'o2 saturation', 'oxygen', 'o2 flow', 'required o2',
+            'base excess', 'a-a gradient', 'ventilator', 'ventilation rate', 'tidal volume', 'intubated',
             'arterial', 'venous', 'lactate', 'lactic', 'carboxyhemoglobin', 'methemoglobin', 'sao2', 'svo2'
         ),
         'priority': 8
     },
     'Coagulation': {
         'keywords': (
-            'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
+            'pt', 'ptt', 'inr', 'prothrombin', 'partial thromboplastin',
             'coagulation', 'clotting', 'anti-xa', 'd-dimer', 'fibrinogen', 'thrombin time', 'act '
         ),
         'priority': 9
@@ -476,7 +482,7 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
             'urine', 'urinalysis', 'specific gravity', 'ketone', 'nitrite',
             'leukocyte', 'epithelial', 'bacteria', 'yeast', 'cast', 'urobilinogen',
             'proteinuria', 'microalbumin', 'albumin/creatinine ratio', 'acr', 'urine sodium', 'urine creatinine',
-            'urine osmolality', 'glucose urine', 'bilirubin urine', 'rbc/hpf', 'wbc/hpf'
+            'urine osmolality', 'glucose urine', 'bilirubin urine', 'rbc/hpf', 'wbc/hpf', 'blood'
         ),
         'priority': 13
     },
@@ -486,7 +492,7 @@ LAB_SORTING_CATEGORIES: Dict[str, Dict[str, Any]] = {
             'therapeutic', 'peak', 'trough',
             'acetaminophen', 'apap', 'salicylate', 'ethanol', 'barbiturate', 'benzodiazepine',
             'opiates', 'opiate', 'amphetamines', 'cocaine', 'phenytoin', 'valproic', 'carbamazepine',
-            'theophylline', 'phenobarbital'
+            'theophylline', 'phenobarbital', 'tacrolimus', 'fk506', 'tacro'
         ),
         'priority': 14
     },
@@ -578,14 +584,15 @@ VITAL_CATEGORIES: Dict[str, Dict[str, Any]] = {
     "Oxygen Therapy/Delivery": {
         "keywords": (
             "fio2", "o2 flow", "oxygen flow", "l/min", "nasal cannula", "nonrebreather", "nrb",
-            "venturi", "trach collar", "high flow", "hf nc", "hfnc", "vapotherm", "face mask", "trach"
+            "venturi", "trach collar", "high flow", "hf nc", "hfnc", "vapotherm", "face mask", "trach",
+            "required o2"
         ),
         "priority": 7,
     },
     "Ventilation/Device Settings": {
         "keywords": (
             "ventilator", "mode", "peep", "pip", "pressure support", "tidal volume", "tvt",
-            "minute ventilation", "insp time", "i:e ratio", "rate (vent)",
+            "minute ventilation", "insp time", "i:e ratio", "rate (vent)", "ventilation rate", "intubated",
             "simv", "pcv", "prvc", "psv", "aprv", "cpap", "bipap"
         ),
         "priority": 8,
